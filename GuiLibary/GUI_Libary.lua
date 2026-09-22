@@ -19,7 +19,7 @@ if parent:FindFirstChild("SketchGUILibrary") then
 end
 
 local Library = {}
-Library.Version = "v2.2.1"
+Library.Version = "v2.2.4"
 Library.ThemeColor = Library.ThemeColor
 Library.Flags = {}
 Library.SettingsFileName = "config1"
