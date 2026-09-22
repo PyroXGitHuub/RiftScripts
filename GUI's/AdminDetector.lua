@@ -22,7 +22,8 @@ local THEME = {
 }
 
 local targetKeywords = {
-    "owner", "co-owner", "administrator", "admin", "developer", "dev", "moderator", "mod", "staff", "creator", "builder", "manager", "helper"
+    "owner", "co-owner", "administrator", "admin", "developer", "dev", "moderator", "mod", "staff", "creator", "builder", "manager", 
+    "helper", "Friend", "Staff", "Contributor", "Community Lead", "Studio Developer", "Owner", "Founder"
 }
 
 -- Hier kannst du zusätzliche Gruppen-IDs eintragen, die immer überwacht werden sollen
