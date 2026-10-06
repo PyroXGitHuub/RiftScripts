@@ -465,7 +465,7 @@ function Library.SaveSettings()
     end
 end
 
-function Library.Settings()
+function Library.LoadSettings()
     local path = GetFilePath()
     if readfile and isfile and isfile(path) then
         local ok, decoded = pcall(function()
