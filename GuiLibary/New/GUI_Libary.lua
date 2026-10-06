@@ -49,7 +49,7 @@ Library.ConfigFolder = ""
 Library.ElementUpdaters = {}
 
 -- Neue optionale Einstellungen
-Library.BackgroundImage = "rbxassetid://109649034704782"
+Library.BackgroundImage = "rbxassetid://85708246103612"
 Library.BackgroundTint = Color3.fromRGB(120, 115, 135)
 Library.BackgroundImageTransparency = 0.25
 Library.MobileMode = nil
