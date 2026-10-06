@@ -465,7 +465,7 @@ function Library.SaveSettings()
     end
 end
 
-function Library.LoadSettings()
+function Library.Settings()
     local path = GetFilePath()
     if readfile and isfile and isfile(path) then
         local ok, decoded = pcall(function()
@@ -2530,9 +2530,9 @@ function Library.New(titleText, customThemeColor)
     local LoadMascot = Create("ImageLabel", {
         Size = UDim2.new(0, 118, 0, 118),
         Position = UDim2.new(0, 16, 0.5, -59),
-        BackgroundColor3 = Theme.Panel,
-        Image = mascotImg or LOGO,
-        ScaleType = Enum.ScaleType.Crop,
+        BackgroundTransparency = 1,
+        Image = LOGO,
+        ScaleType = Enum.ScaleType.Fit,
         Parent = LoadingFrame,
     })
     Corner(LoadMascot, 10)
