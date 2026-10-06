@@ -49,7 +49,7 @@ Library.ConfigFolder = ""
 Library.ElementUpdaters = {}
 
 -- Neue optionale Einstellungen
-Library.BackgroundImage = "rbxassetid://109649034704782"
+Library.BackgroundImage = "rbxassetid://135724155225592"
 Library.BackgroundTint = Color3.fromRGB(120, 115, 135)
 Library.BackgroundImageTransparency = 0.25
 Library.MobileMode = nil
@@ -71,7 +71,7 @@ Library.Theme = {
 local Theme = Library.Theme
 
 local BaseFolderName = "PyroXGUI"
-local LOGO = "rbxassetid://107742855012780"
+local LOGO = "rbxassetid://109649034704782"
 
 -- ==========================================
 -- HELFER (nur Optik, keine Logik)
@@ -2531,7 +2531,7 @@ function Library.New(titleText, customThemeColor)
         Size = UDim2.new(0, 118, 0, 118),
         Position = UDim2.new(0, 16, 0.5, -59),
         BackgroundColor3 = Theme.Panel,
-        Image = mascotImg or LOGO,
+        Image = LOGO,
         ScaleType = Enum.ScaleType.Crop,
         Parent = LoadingFrame,
     })
