@@ -2511,6 +2511,9 @@ function Library.New(titleText, customThemeColor)
     -- ==========================================
     -- LADEBILDSCHIRM
     -- ==========================================
+    -- Feste Logo-Farbe für den Ladebildschirm (unabhängig von der Theme-Farbe)
+    local LoadColor = Color3.fromRGB(168, 85, 247)
+    -- ==========================================
     local LoadingFrame = Create("Frame", {
         Name = "Loading",
         AnchorPoint = Vector2.new(0.5, 0.5),
@@ -2524,7 +2527,11 @@ function Library.New(titleText, customThemeColor)
     })
     Corner(LoadingFrame, 12)
     local LoadStroke = Stroke(LoadingFrame, Color3.new(1, 1, 1), 1.5, 0)
-    local LoadGrad = Create("UIGradient", {Color = strokeColors, Parent = LoadStroke})
+    local LoadGrad = Create("UIGradient", {Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, LoadColor),
+        ColorSequenceKeypoint.new(0.5, Theme.Stroke),
+        ColorSequenceKeypoint.new(1, LoadColor),
+    }), Parent = LoadStroke})
     AddScale(LoadingFrame)
 
     local LoadMascot = Create("ImageLabel", {
@@ -2536,7 +2543,7 @@ function Library.New(titleText, customThemeColor)
         Parent = LoadingFrame,
     })
     Corner(LoadMascot, 10)
-    Stroke(LoadMascot, Library.ThemeColor, 1.5, 0.2)
+    Stroke(LoadMascot, LoadColor, 1.5, 0.2)
 
     Create("TextLabel", {
         Size = UDim2.new(1, -166, 0, 24),
@@ -2574,7 +2581,7 @@ function Library.New(titleText, customThemeColor)
 
     local BarFill = Create("Frame", {
         Size = UDim2.new(0, 0, 1, 0),
-        BackgroundColor3 = Library.ThemeColor,
+        BackgroundColor3 = LoadColor,
         BorderSizePixel = 0,
         Parent = BarBG,
     })
@@ -2587,7 +2594,7 @@ function Library.New(titleText, customThemeColor)
         BackgroundTransparency = 1,
         Font = Library.FontBold,
         Text = "0%",
-        TextColor3 = Lighten(Library.ThemeColor, 0.4),
+        TextColor3 = Lighten(LoadColor, 0.4),
         TextSize = 11,
         TextXAlignment = Enum.TextXAlignment.Right,
         Parent = LoadingFrame,
