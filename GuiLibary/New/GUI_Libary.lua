@@ -2530,9 +2530,9 @@ function Library.New(titleText, customThemeColor)
     local LoadMascot = Create("ImageLabel", {
         Size = UDim2.new(0, 118, 0, 118),
         Position = UDim2.new(0, 16, 0.5, -59),
-        BackgroundTransparency = 1,
-        Image = LOGO,
-        ScaleType = Enum.ScaleType.Fit,
+        BackgroundColor3 = Theme.Panel,
+        Image = mascotImg or LOGO,
+        ScaleType = Enum.ScaleType.Crop,
         Parent = LoadingFrame,
     })
     Corner(LoadMascot, 10)
