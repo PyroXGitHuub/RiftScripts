@@ -71,7 +71,7 @@ Library.Theme = {
 local Theme = Library.Theme
 
 local BaseFolderName = "PyroXGUI"
-local LOGO = "rbxassetid://107742855012780"
+local LOGO = "rbxassetid://135724155225592"
 
 -- ==========================================
 -- HELFER (nur Optik, keine Logik)
