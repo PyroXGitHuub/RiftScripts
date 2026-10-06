@@ -41,7 +41,7 @@ for _, oldName in ipairs({"SketchGUILibrary", "SketchGUILibrary_Mobile"}) do
 end
 
 local Library = {}
-Library.Version = "v3.0.0"
+Library.Version = "v3.0.1"
 Library.ThemeColor = Library.ThemeColor or Color3.fromRGB(150, 90, 255)
 Library.Flags = {}
 Library.SettingsFileName = "config1"
