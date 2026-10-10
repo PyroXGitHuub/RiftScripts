@@ -3,7 +3,7 @@
 -- ==========================================
 
 -- HIER DEN LINK ZUR RAW-DATEI DER BIBLIOTHEK EINTRAGEN
-local gui_link = "https://raw.githubusercontent.com/PyroXGitHuub/MyCode/refs/heads/main/Gui_Libary/GUI_Libary.lua"
+local gui_link = "https://raw.githubusercontent.com/PyroXGitHuub/MyCode/refs/heads/main/Gui_Libary/New/GUI_Libary.lua"
 local Library = loadstring(game:HttpGet(gui_link))()
 
 local ConfigFolderName = "Example"
