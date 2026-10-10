@@ -1,5 +1,5 @@
 --[[
-    PyroX GUI Library  ·  v3.0.0  (Remake)
+    PyroX GUI Library  ·  v3.1.0  (Remake)
     ------------------------------------------------------------
     API ist 1:1 kompatibel mit v2.x:
       Library.New / Window:AddTab / Tab:AddSubTab
@@ -8,11 +8,21 @@
       AddTextBox, AddButton, Library.SaveSettings / LoadSettings
     Flags, Config-Ordner & Callbacks funktionieren exakt wie vorher.
 
+    NEU in v3.1.0 (Config-System):
+      - Dropdown mit allen vorhandenen Configs (Config auswählen)
+      - Load / Save / Delete (Delete mit Bestätigung)
+      - Neue Config: einfach einen Namen ins Feld schreiben und Save drücken
+      - Config-Name ist standardmäßig LEER (kein "config1" mehr).
+        Ohne Namen wird nichts gespeichert, es kommt ein Hinweis.
+      - Library.ListConfigs()        -> Liste aller Config-Namen
+      - Library.DeleteSettings(name) -> Config löschen
+
     NEU (optional, VOR Library.New setzen):
       Library.BackgroundImage             = "rbxassetid://109649034704782"
       Library.BackgroundTint              = Color3.fromRGB(120, 115, 135)
       Library.BackgroundImageTransparency = 0.25
       Library.MobileMode                  = nil   -- nil = auto, true/false = erzwingen
+      Library.SettingsFileName            = "meinconfig" -- optional: wird beim Start automatisch geladen
 ]]
 
 local Players = game:GetService("Players")
@@ -41,10 +51,10 @@ for _, oldName in ipairs({"SketchGUILibrary", "SketchGUILibrary_Mobile"}) do
 end
 
 local Library = {}
-Library.Version = "v3.0.1"
+Library.Version = "v3.1.0"
 Library.ThemeColor = Library.ThemeColor or Color3.fromRGB(150, 90, 255)
 Library.Flags = {}
-Library.SettingsFileName = "config1"
+Library.SettingsFileName = "" -- bewusst leer: der Nutzer muss selbst einen Namen wählen
 Library.ConfigFolder = ""
 Library.ElementUpdaters = {}
 
@@ -275,40 +285,45 @@ local function DetectMobile()
 end
 
 -- ==========================================
--- CONFIG (Logik unverändert)
+-- CONFIG
 -- ==========================================
 
-local function GetConfigDisplayName()
-    local name = Library.SettingsFileName
-    if name == "" then
-        name = "config1"
-    end
-    return string.gsub(name, "%.json$", "")
+-- Entfernt .json, ungültige Dateizeichen und Leerzeichen am Rand
+local function SanitizeConfigName(name)
+    name = tostring(name or "")
+    name = name:gsub("%.json$", "")
+    name = name:gsub('[\\/:*?"<>|]', "")
+    name = name:match("^%s*(.-)%s*$") or ""
+    return name
 end
 
-local function GetFilePath()
-    -- Hauptordner prüfen/erstellen
-    if makefolder and not isfolder(BaseFolderName) then
+local function GetConfigDisplayName()
+    return SanitizeConfigName(Library.SettingsFileName)
+end
+
+-- Gibt den Config-Ordner zurück (und erstellt ihn bei Bedarf)
+local function GetConfigFolder()
+    if makefolder and isfolder and not isfolder(BaseFolderName) then
         pcall(function() makefolder(BaseFolderName) end)
     end
 
-    -- Unterordner prüfen/erstellen, falls angegeben
     local currentFolder = BaseFolderName
     if Library.ConfigFolder and Library.ConfigFolder ~= "" then
         currentFolder = BaseFolderName .. "/" .. Library.ConfigFolder
-        if makefolder and not isfolder(currentFolder) then
+        if makefolder and isfolder and not isfolder(currentFolder) then
             pcall(function() makefolder(currentFolder) end)
         end
     end
+    return currentFolder
+end
 
-    local name = Library.SettingsFileName
+-- Gibt nil zurück, wenn kein Config-Name gesetzt ist
+local function GetFilePath(nameOverride)
+    local name = SanitizeConfigName(nameOverride or Library.SettingsFileName)
     if name == "" then
-        name = "config1"
+        return nil
     end
-    if not string.match(name, "%.json$") then
-        name = name .. ".json"
-    end
-    return currentFolder .. "/" .. name
+    return GetConfigFolder() .. "/" .. name .. ".json"
 end
 
 -- Nur für die Anzeige im Settings-Panel (erstellt keine Ordner)
@@ -317,7 +332,11 @@ local function GetConfigPathString()
     if Library.ConfigFolder and Library.ConfigFolder ~= "" then
         folder = folder .. "/" .. Library.ConfigFolder
     end
-    return folder .. "/" .. GetConfigDisplayName() .. ".json"
+    local name = GetConfigDisplayName()
+    if name == "" then
+        return folder .. "/"
+    end
+    return folder .. "/" .. name .. ".json"
 end
 
 local function GetEnumFromValue(val)
@@ -438,56 +457,138 @@ local function ShowPopup(message)
     end)
 end
 
-function Library.SaveSettings()
-    if writefile then
-        local ok, encoded = pcall(function()
-            local exportTable = {}
-            for k, v in pairs(Library.Flags) do
-                if typeof(v) == "Color3" then
-                    exportTable[k] = {R = v.R, G = v.G, B = v.B}
-                elseif typeof(v) == "EnumItem" then
-                    -- Fix: tostring() splitten, da v.EnumType.Name einen Fehler auslöst
-                    local split = tostring(v):split(".")
-                    exportTable[k] = {Enum = split[2], Name = split[3]}
-                else
-                    exportTable[k] = v
-                end
+-- Liste aller vorhandenen Configs im aktuellen Config-Ordner
+function Library.ListConfigs()
+    local result = {}
+    if not listfiles then
+        return result
+    end
+    local folder = GetConfigFolder()
+    local ok, files = pcall(function()
+        return listfiles(folder)
+    end)
+    if ok and type(files) == "table" then
+        for _, f in ipairs(files) do
+            local n = tostring(f):match("([^/\\]+)%.json$")
+            if n then
+                table.insert(result, n)
             end
-            return HttpService:JSONEncode(exportTable)
-        end)
-        if ok then
-            local path = GetFilePath()
-            pcall(function()
-                writefile(path, encoded)
-            end)
-            ShowPopup('saved "' .. GetConfigDisplayName() .. '"')
         end
+    end
+    table.sort(result, function(a, b)
+        return a:lower() < b:lower()
+    end)
+    return result
+end
+
+function Library.SaveSettings()
+    if not writefile then
+        ShowPopup("Saving is not supported by your executor")
+        return
+    end
+
+    local path = GetFilePath()
+    if not path then
+        ShowPopup("Enter a config name first")
+        return
+    end
+
+    local ok, encoded = pcall(function()
+        local exportTable = {}
+        for k, v in pairs(Library.Flags) do
+            if typeof(v) == "Color3" then
+                exportTable[k] = {R = v.R, G = v.G, B = v.B}
+            elseif typeof(v) == "EnumItem" then
+                -- Fix: tostring() splitten, da v.EnumType.Name einen Fehler auslöst
+                local split = tostring(v):split(".")
+                exportTable[k] = {Enum = split[2], Name = split[3]}
+            else
+                exportTable[k] = v
+            end
+        end
+        return HttpService:JSONEncode(exportTable)
+    end)
+    if ok then
+        pcall(function()
+            writefile(path, encoded)
+        end)
+        ShowPopup('saved "' .. GetConfigDisplayName() .. '"')
     end
 end
 
-function Library.LoadSettings()
+-- silent = true: keine Fehler-Popups (wird beim Start so aufgerufen)
+function Library.LoadSettings(silent)
     local path = GetFilePath()
-    if readfile and isfile and isfile(path) then
-        local ok, decoded = pcall(function()
-            local content = readfile(path)
-            return HttpService:JSONDecode(content)
-        end)
-        if ok and type(decoded) == "table" then
-            for k, v in pairs(decoded) do
-                if type(v) == "table" and v.Enum and v.Name then
-                    pcall(function()
-                        Library.Flags[k] = Enum[v.Enum][v.Name]
-                    end)
-                else
-                    Library.Flags[k] = v
-                end
-            end
-            for _, updateFunc in pairs(Library.ElementUpdaters) do
-                pcall(updateFunc)
-            end
-            ShowPopup('loaded "' .. GetConfigDisplayName() .. '"')
+    if not path then
+        if not silent then
+            ShowPopup("Select or enter a config name first")
         end
+        return
     end
+
+    if not (readfile and isfile) then
+        if not silent then
+            ShowPopup("Loading is not supported by your executor")
+        end
+        return
+    end
+
+    if not isfile(path) then
+        if not silent then
+            ShowPopup('config "' .. GetConfigDisplayName() .. '" not found')
+        end
+        return
+    end
+
+    local ok, decoded = pcall(function()
+        local content = readfile(path)
+        return HttpService:JSONDecode(content)
+    end)
+    if ok and type(decoded) == "table" then
+        for k, v in pairs(decoded) do
+            if type(v) == "table" and v.Enum and v.Name then
+                pcall(function()
+                    Library.Flags[k] = Enum[v.Enum][v.Name]
+                end)
+            else
+                Library.Flags[k] = v
+            end
+        end
+        for _, updateFunc in pairs(Library.ElementUpdaters) do
+            pcall(updateFunc)
+        end
+        ShowPopup('loaded "' .. GetConfigDisplayName() .. '"')
+    elseif not silent then
+        ShowPopup("Could not read config")
+    end
+end
+
+function Library.DeleteSettings(name)
+    local clean = SanitizeConfigName(name or Library.SettingsFileName)
+    if clean == "" then
+        ShowPopup("Select a config first")
+        return false
+    end
+    if not (delfile and isfile) then
+        ShowPopup("Deleting is not supported by your executor")
+        return false
+    end
+
+    local path = GetFilePath(clean)
+    if not path or not isfile(path) then
+        ShowPopup('config "' .. clean .. '" not found')
+        return false
+    end
+
+    local ok = pcall(function()
+        delfile(path)
+    end)
+    if ok then
+        ShowPopup('deleted "' .. clean .. '"')
+        return true
+    end
+    ShowPopup("Could not delete config")
+    return false
 end
 
 -- ==========================================
@@ -951,7 +1052,7 @@ function Library.New(titleText, customThemeColor)
         Position = UDim2.new(0, 14, 0, 34),
         BackgroundTransparency = 1,
         Font = Library.Font,
-        Text = "Save & load your settings",
+        Text = "Save, load & manage your configs",
         TextColor3 = Theme.SubText,
         TextSize = 12,
         TextXAlignment = Enum.TextXAlignment.Left,
@@ -974,42 +1075,94 @@ function Library.New(titleText, customThemeColor)
         })
     end
 
-    SettLabel("CONFIG NAME", 62)
+    -- ---------- SAVED CONFIGS (Dropdown) ----------
+    SettLabel("SAVED CONFIGS", 62)
+
+    local ConfigDropButton = Create("TextButton", {
+        Size = UDim2.new(1, -112, 0, 32),
+        Position = UDim2.new(0, 14, 0, 80),
+        BackgroundColor3 = Theme.ElementAlt,
+        AutoButtonColor = false,
+        Font = Library.Font,
+        Text = "Select a config...",
+        TextColor3 = Theme.Text,
+        TextSize = 13,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        ZIndex = 11,
+        Parent = SettingsPanel,
+    })
+    Corner(ConfigDropButton, 6)
+    Stroke(ConfigDropButton, Theme.Stroke, 1, 0.2)
+    AddHover(ConfigDropButton, Theme.ElementAlt, Theme.Hover)
+    Create("UIPadding", {PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 26), Parent = ConfigDropButton})
+    local ConfigArrow = Create("TextLabel", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Size = UDim2.new(0, 14, 0, 14),
+        Position = UDim2.new(1, 13, 0.5, 0),
+        BackgroundTransparency = 1,
+        Font = Library.FontBold,
+        Text = "▼",
+        TextColor3 = Theme.SubText,
+        TextSize = 9,
+        ZIndex = 12,
+        Parent = ConfigDropButton,
+    })
+
+    local RefreshBtn = Create("TextButton", {
+        Size = UDim2.new(0, 84, 0, 32),
+        Position = UDim2.new(1, -98, 0, 80),
+        BackgroundColor3 = Theme.ElementAlt,
+        AutoButtonColor = false,
+        Font = Library.FontBold,
+        Text = "Refresh",
+        TextColor3 = Theme.Text,
+        TextSize = 12,
+        ZIndex = 11,
+        Parent = SettingsPanel,
+    })
+    Corner(RefreshBtn, 6)
+    Stroke(RefreshBtn, Theme.Stroke, 1, 0.2)
+    AddHover(RefreshBtn, Theme.ElementAlt, Theme.Hover)
+
+    -- ---------- CONFIG NAME (Eingabe, standardmäßig leer) ----------
+    SettLabel("CONFIG NAME (type a new name to create a new config)", 122)
     local SettNameBox = Create("TextBox", {
         Size = UDim2.new(1, -28, 0, 32),
-        Position = UDim2.new(0, 14, 0, 80),
+        Position = UDim2.new(0, 14, 0, 140),
         BackgroundColor3 = Theme.ElementAlt,
         BorderSizePixel = 0,
         Font = Library.Font,
-        Text = Library.SettingsFileName,
-        PlaceholderText = "Settings File Name...",
+        Text = SanitizeConfigName(Library.SettingsFileName),
+        PlaceholderText = "Enter a config name...",
         PlaceholderColor3 = Theme.SubText,
         TextColor3 = Theme.Text,
         TextSize = 13,
+        ClearTextOnFocus = false,
         ZIndex = 11,
         Parent = SettingsPanel,
     })
     Corner(SettNameBox, 6)
     local SettNameStroke = Stroke(SettNameBox, Theme.Stroke, 1, 0.2)
 
-    local PathInfo
-
-    SettNameBox.Focused:Connect(function()
-        Tween(SettNameStroke, 0.2, {Color = Library.ThemeColor, Transparency = 0})
-    end)
-    SettNameBox.FocusLost:Connect(function()
-        Tween(SettNameStroke, 0.2, {Color = Theme.Stroke, Transparency = 0.2})
-        if SettNameBox.Text ~= "" then
-            Library.SettingsFileName = SettNameBox.Text
-        end
-        if PathInfo then
-            PathInfo.Text = "File: " .. GetConfigPathString()
-        end
-    end)
+    -- ---------- Load / Save / Delete ----------
+    local ButtonRow = Create("Frame", {
+        Size = UDim2.new(1, -28, 0, 34),
+        Position = UDim2.new(0, 14, 0, 182),
+        BackgroundTransparency = 1,
+        ZIndex = 11,
+        Parent = SettingsPanel,
+    })
+    Create("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 8),
+        Parent = ButtonRow,
+    })
 
     local LoadBtn = Create("TextButton", {
-        Size = UDim2.new(0.5, -18, 0, 34),
-        Position = UDim2.new(0, 14, 0, 122),
+        LayoutOrder = 1,
+        Size = UDim2.new(1 / 3, -6, 1, 0),
         BackgroundColor3 = Theme.ElementAlt,
         AutoButtonColor = false,
         Font = Library.FontBold,
@@ -1017,15 +1170,15 @@ function Library.New(titleText, customThemeColor)
         TextColor3 = Theme.Text,
         TextSize = 13,
         ZIndex = 11,
-        Parent = SettingsPanel,
+        Parent = ButtonRow,
     })
     Corner(LoadBtn, 6)
     Stroke(LoadBtn, Theme.Stroke, 1, 0.2)
     AddHover(LoadBtn, Theme.ElementAlt, Theme.Hover)
 
     local SaveBtn = Create("TextButton", {
-        Size = UDim2.new(0.5, -18, 0, 34),
-        Position = UDim2.new(0.5, 4, 0, 122),
+        LayoutOrder = 2,
+        Size = UDim2.new(1 / 3, -6, 1, 0),
         BackgroundColor3 = Library.ThemeColor,
         AutoButtonColor = false,
         Font = Library.FontBold,
@@ -1033,33 +1186,40 @@ function Library.New(titleText, customThemeColor)
         TextColor3 = ContrastText(Library.ThemeColor),
         TextSize = 13,
         ZIndex = 11,
-        Parent = SettingsPanel,
+        Parent = ButtonRow,
     })
     Corner(SaveBtn, 6)
     Shine(SaveBtn)
     AddHover(SaveBtn, Library.ThemeColor, Lighten(Library.ThemeColor, 0.15))
 
-    LoadBtn.MouseButton1Click:Connect(function()
-        ClickFlash(LoadBtn)
-        Library.LoadSettings()
-    end)
+    local DeleteBtn = Create("TextButton", {
+        LayoutOrder = 3,
+        Size = UDim2.new(1 / 3, -6, 1, 0),
+        BackgroundColor3 = Theme.ElementAlt,
+        AutoButtonColor = false,
+        Font = Library.FontBold,
+        Text = "Delete",
+        TextColor3 = Theme.Text,
+        TextSize = 13,
+        ZIndex = 11,
+        Parent = ButtonRow,
+    })
+    Corner(DeleteBtn, 6)
+    Stroke(DeleteBtn, Color3.fromRGB(220, 70, 80), 1, 0.3)
+    AddHover(DeleteBtn, Theme.ElementAlt, Color3.fromRGB(90, 30, 38))
 
-    SaveBtn.MouseButton1Click:Connect(function()
-        ClickFlash(SaveBtn)
-        Library.SaveSettings()
-    end)
-
+    -- ---------- MENU TOGGLE KEY ----------
     local menuKeyFlag = "MenuToggleKey"
     if Library.Flags[menuKeyFlag] == nil then
         Library.Flags[menuKeyFlag] = Enum.KeyCode.RightShift
     end
 
-    SettLabel("MENU TOGGLE KEY", 172)
+    SettLabel("MENU TOGGLE KEY", 230)
 
     local currentMenuKey = Library.Flags[menuKeyFlag]
     local MenuKeyButton = Create("TextButton", {
         Size = UDim2.new(1, -28, 0, 32),
-        Position = UDim2.new(0, 14, 0, 190),
+        Position = UDim2.new(0, 14, 0, 248),
         BackgroundColor3 = Theme.ElementAlt,
         AutoButtonColor = false,
         Font = Library.FontBold,
@@ -1073,7 +1233,7 @@ function Library.New(titleText, customThemeColor)
     Stroke(MenuKeyButton, Theme.Stroke, 1, 0.2)
     AddHover(MenuKeyButton, Theme.ElementAlt, Theme.Hover)
 
-    PathInfo = Create("TextLabel", {
+    local PathInfo = Create("TextLabel", {
         Size = UDim2.new(1, -28, 0, 16),
         Position = UDim2.new(0, 14, 1, -48),
         BackgroundTransparency = 1,
@@ -1098,6 +1258,245 @@ function Library.New(titleText, customThemeColor)
         ZIndex = 11,
         Parent = SettingsPanel,
     })
+
+    -- ---------- Config-Liste (Popup-Dropdown) ----------
+    local ConfigList = Create("ScrollingFrame", {
+        Size = UDim2.new(1, -112, 0, 0),
+        Position = UDim2.new(0, 14, 0, 116),
+        BackgroundColor3 = Theme.Panel,
+        BorderSizePixel = 0,
+        CanvasSize = UDim2.new(0, 0, 0, 0),
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = Library.ThemeColor,
+        Visible = false,
+        ZIndex = 30,
+        Parent = SettingsPanel,
+    })
+    Corner(ConfigList, 8)
+    Stroke(ConfigList, Library.ThemeColor, 1, 0.35)
+    Create("UIPadding", {
+        PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4),
+        PaddingLeft = UDim.new(0, 4), PaddingRight = UDim.new(0, 4),
+        Parent = ConfigList,
+    })
+    Create("UIListLayout", {
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 2),
+        Parent = ConfigList,
+    })
+
+    local knownConfigs = {}
+    local configButtons = {}
+    local configButtonMap = {}
+    local configListHeight = 38
+    local configListOpen = false
+    local deleteToken = 0
+    local deleteArmed = false
+
+    local function CurrentName()
+        return SanitizeConfigName(Library.SettingsFileName)
+    end
+
+    local function CloseConfigList()
+        if not configListOpen then return end
+        configListOpen = false
+        Tween(ConfigArrow, 0.2, {Rotation = 0})
+        ConfigList.Visible = false
+    end
+    table.insert(openPopups, CloseConfigList)
+
+    local function UpdateDropText()
+        local name = CurrentName()
+        if name == "" then
+            ConfigDropButton.Text = "Select a config..."
+            return
+        end
+        local exists = false
+        for _, n in ipairs(knownConfigs) do
+            if n == name then
+                exists = true
+                break
+            end
+        end
+        ConfigDropButton.Text = exists and name or ("New: " .. name)
+    end
+
+    local function RecolorConfigButtons()
+        local name = CurrentName()
+        for n, b in pairs(configButtonMap) do
+            local active = (n == name)
+            b.BackgroundColor3 = active and Library.ThemeColor or Theme.ElementAlt
+            b.TextColor3 = active and ContrastText(Library.ThemeColor) or Theme.Text
+        end
+    end
+
+    local function UpdatePathInfo()
+        PathInfo.Text = "File: " .. GetConfigPathString()
+    end
+
+    local function SelectConfig(name)
+        Library.SettingsFileName = name
+        SettNameBox.Text = name
+        UpdateDropText()
+        RecolorConfigButtons()
+        UpdatePathInfo()
+        CloseConfigList()
+    end
+
+    local function RefreshConfigList()
+        for _, b in ipairs(configButtons) do
+            b:Destroy()
+        end
+        configButtons = {}
+        configButtonMap = {}
+
+        knownConfigs = Library.ListConfigs()
+        local count = #knownConfigs
+        configListHeight = math.clamp(math.max(count, 1) * 30 + 8, 38, 160)
+        ConfigList.CanvasSize = UDim2.new(0, 0, 0, math.max(count, 1) * 30 + 8)
+
+        if count == 0 then
+            local empty = Create("TextLabel", {
+                Size = UDim2.new(1, -4, 0, 28),
+                BackgroundTransparency = 1,
+                Font = Library.Font,
+                Text = "No configs found",
+                TextColor3 = Theme.SubText,
+                TextSize = 12,
+                ZIndex = 31,
+                Parent = ConfigList,
+            })
+            table.insert(configButtons, empty)
+        end
+
+        for i, n in ipairs(knownConfigs) do
+            local OptBtn = Create("TextButton", {
+                LayoutOrder = i,
+                Size = UDim2.new(1, -4, 0, 28),
+                BackgroundColor3 = Theme.ElementAlt,
+                AutoButtonColor = false,
+                Font = Library.Font,
+                Text = n,
+                TextColor3 = Theme.Text,
+                TextSize = 12,
+                TextTruncate = Enum.TextTruncate.AtEnd,
+                ZIndex = 31,
+                Parent = ConfigList,
+            })
+            Corner(OptBtn, 5)
+            local optStroke = Stroke(OptBtn, Theme.Stroke, 1, 0.5)
+            OptBtn.MouseEnter:Connect(function()
+                Tween(optStroke, 0.15, {Color = Library.ThemeColor, Transparency = 0.1})
+            end)
+            OptBtn.MouseLeave:Connect(function()
+                Tween(optStroke, 0.15, {Color = Theme.Stroke, Transparency = 0.5})
+            end)
+            OptBtn.MouseButton1Click:Connect(function()
+                SelectConfig(n)
+            end)
+            table.insert(configButtons, OptBtn)
+            configButtonMap[n] = OptBtn
+        end
+
+        RecolorConfigButtons()
+        UpdateDropText()
+    end
+
+    -- Übernimmt den Text aus dem Namensfeld (bereinigt) und gibt ihn zurück
+    local function ApplyNameFromBox()
+        local clean = SanitizeConfigName(SettNameBox.Text)
+        Library.SettingsFileName = clean
+        SettNameBox.Text = clean
+        UpdateDropText()
+        RecolorConfigButtons()
+        UpdatePathInfo()
+        return clean
+    end
+
+    -- Dropdown öffnen/schließen
+    ConfigDropButton.MouseButton1Click:Connect(function()
+        local targetState = not configListOpen
+        CloseAllPopups()
+        if targetState then
+            RefreshConfigList()
+            configListOpen = true
+            Tween(ConfigArrow, 0.2, {Rotation = 180})
+            ConfigList.Size = UDim2.new(1, -112, 0, 0)
+            ConfigList.Visible = true
+            Tween(ConfigList, 0.25, {Size = UDim2.new(1, -112, 0, configListHeight)})
+        end
+    end)
+
+    RefreshBtn.MouseButton1Click:Connect(function()
+        ClickFlash(RefreshBtn)
+        RefreshConfigList()
+    end)
+
+    SettNameBox.Focused:Connect(function()
+        CloseConfigList()
+        Tween(SettNameStroke, 0.2, {Color = Library.ThemeColor, Transparency = 0})
+    end)
+    SettNameBox.FocusLost:Connect(function()
+        Tween(SettNameStroke, 0.2, {Color = Theme.Stroke, Transparency = 0.2})
+        ApplyNameFromBox()
+    end)
+
+    LoadBtn.MouseButton1Click:Connect(function()
+        ClickFlash(LoadBtn)
+        CloseConfigList()
+        ApplyNameFromBox()
+        Library.LoadSettings()
+    end)
+
+    SaveBtn.MouseButton1Click:Connect(function()
+        ClickFlash(SaveBtn)
+        CloseConfigList()
+        local name = ApplyNameFromBox()
+        if name == "" then
+            ShowPopup("Enter a config name first")
+            return
+        end
+        Library.SaveSettings()
+        RefreshConfigList()
+    end)
+
+    -- Delete mit Bestätigung (zweiter Klick innerhalb von 3 Sekunden)
+    DeleteBtn.MouseButton1Click:Connect(function()
+        ClickFlash(DeleteBtn)
+        CloseConfigList()
+        local name = ApplyNameFromBox()
+        if name == "" then
+            ShowPopup("Select a config to delete")
+            return
+        end
+
+        if not deleteArmed then
+            deleteArmed = true
+            deleteToken = deleteToken + 1
+            local myToken = deleteToken
+            DeleteBtn.Text = "Confirm?"
+            task.delay(3, function()
+                if deleteArmed and deleteToken == myToken then
+                    deleteArmed = false
+                    DeleteBtn.Text = "Delete"
+                end
+            end)
+            return
+        end
+
+        deleteArmed = false
+        deleteToken = deleteToken + 1
+        DeleteBtn.Text = "Delete"
+
+        if Library.DeleteSettings(name) then
+            Library.SettingsFileName = ""
+            SettNameBox.Text = ""
+            RefreshConfigList()
+            UpdatePathInfo()
+        end
+    end)
+
+    RefreshConfigList()
 
     local bindingMenuKey = false
     MenuKeyButton.MouseButton1Click:Connect(function()
@@ -1294,6 +1693,9 @@ function Library.New(titleText, customThemeColor)
         end
         SettingsPanel.Visible = not SettingsPanel.Visible
         SetSettingsVisual(SettingsPanel.Visible)
+        if SettingsPanel.Visible then
+            RefreshConfigList()
+        end
     end)
 
     local FilterTitle = Create("TextLabel", {
@@ -2506,7 +2908,8 @@ function Library.New(titleText, customThemeColor)
         return TabObj
     end
 
-    Library.LoadSettings()
+    -- Beim Start still laden (nur wenn ein Config-Name vorab gesetzt wurde)
+    Library.LoadSettings(true)
 
     -- ==========================================
     -- LADEBILDSCHIRM
