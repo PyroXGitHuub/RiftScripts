@@ -278,8 +278,29 @@ local function SetSwitch(sw, knob, state)
 end
 
 local function DetectMobile()
+    -- Manuelle Überschreibung hat Vorrang
     if Library.MobileMode ~= nil then
         return Library.MobileMode == true
+    end
+
+    -- 1) Plattform direkt abfragen (funktioniert auch im Emulator)
+    local okPlat, platform = pcall(function()
+        return UserInputService:GetPlatform()
+    end)
+    if okPlat and platform then
+        if platform == Enum.Platform.Android or platform == Enum.Platform.IOS then
+            return true
+        end
+        if platform == Enum.Platform.Windows or platform == Enum.Platform.OSX
+            or platform == Enum.Platform.Linux or platform == Enum.Platform.UWP then
+            -- Desktop: nur Mobile, wenn Touch ohne Maus
+            return UserInputService.TouchEnabled and not UserInputService.MouseEnabled
+        end
+    end
+
+    -- 2) Fallback: Touch vorhanden und keine echte Tastatur
+    if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then
+        return true
     end
     return UserInputService.TouchEnabled and not UserInputService.MouseEnabled
 end
