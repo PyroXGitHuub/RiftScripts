@@ -56,6 +56,7 @@ local Library = {
 	Accent = Color3.fromRGB(150, 90, 255),
 	ConfigFolder = "RiftLib",
 	StrokeSpeed = 50, -- Grad pro Sekunde (Rand-Verlauf)
+	Animations = true, -- alle UI-Animationen an/aus
 	MobileMode = nil, -- nil = auto, true/false = erzwingen
 	IsMobile = false,
 	Assets = {
@@ -183,6 +184,7 @@ local function IsMove(input)
 end
 
 local function ClickFlash(btn)
+	if Library.Animations == false then return end
 	local sc = btn:FindFirstChild("ClickScale") or New("UIScale", { Name = "ClickScale", Parent = btn })
 	sc.Scale = 0.93
 	Tween(sc, { Scale = 1 }, 0.3, Enum.EasingStyle.Back)
@@ -260,6 +262,8 @@ local function Separator(parent, y)
 	return sep
 end
 
+local Ripple -- wird weiter unten gesetzt
+
 local function HoverBg(btn, getBase, getHover)
 	btn.MouseEnter:Connect(function() Tween(btn, { BackgroundColor3 = getHover() }, 0.15) end)
 	btn.MouseLeave:Connect(function() Tween(btn, { BackgroundColor3 = getBase() }, 0.15) end)
@@ -296,26 +300,106 @@ local function MakeButton(parent, text, style, props)
 		end)
 	end
 	btn.MouseButton1Click:Connect(function() ClickFlash(btn) end)
+	Ripple(btn)
 	btn.Parent = parent
 	return btn
 end
 
+--// ==========================================
+--// ANIMATIONEN
+--// ==========================================
+local function Anim() return Library.Animations ~= false end
+
+-- Ripple beim Klicken (Kreis breitet sich vom Klickpunkt aus)
+function Ripple(btn)
+	btn.ClipsDescendants = true
+	btn.InputBegan:Connect(function(input)
+		if not IsPress(input) or not Anim() then return end
+		local abs, size = btn.AbsolutePosition, btn.AbsoluteSize
+		if size.X <= 0 or size.Y <= 0 then return end
+		local rx = math.clamp((input.Position.X - abs.X) / size.X, 0, 1)
+		local ry = math.clamp((input.Position.Y - abs.Y) / size.Y, 0, 1)
+		local circle = New("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(rx, ry), Size = UDim2.fromScale(0, 0),
+			SizeConstraint = Enum.SizeConstraint.RelativeXX, BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0.82,
+			BorderSizePixel = 0, ZIndex = btn.ZIndex + 5, Parent = btn,
+		}, { Round() })
+		Tween(circle, { Size = UDim2.fromScale(2.4, 2.4), BackgroundTransparency = 1 }, 0.55, Enum.EasingStyle.Quad)
+		task.delay(0.6, function() circle:Destroy() end)
+	end)
+end
+
+-- Einblenden: merkt sich die echten Transparenzen und blendet von unsichtbar dorthin
+local fadeCache = setmetatable({}, { __mode = "k" })
+local function FadeTargets(root)
+	local out = {}
+	local list = root:GetDescendants()
+	table.insert(list, 1, root)
+	for _, d in ipairs(list) do
+		local c = fadeCache[d]
+		if not c then
+			c = {}
+			if d:IsA("GuiObject") then c.BackgroundTransparency = d.BackgroundTransparency end
+			if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then c.TextTransparency = d.TextTransparency end
+			if d:IsA("ImageLabel") or d:IsA("ImageButton") then c.ImageTransparency = d.ImageTransparency end
+			if d:IsA("UIStroke") then c.Transparency = d.Transparency end
+			fadeCache[d] = c
+		end
+		if next(c) then out[#out + 1] = { d, c } end
+	end
+	return out
+end
+local function FadeIn(root, t, delay)
+	if not Anim() then return end
+	local targets = FadeTargets(root)
+	for _, p in ipairs(targets) do
+		for k in pairs(p[2]) do p[1][k] = 1 end
+	end
+	task.delay(delay or 0, function()
+		for _, p in ipairs(targets) do
+			if p[1].Parent then Tween(p[1], p[2], t or 0.3, Enum.EasingStyle.Quad) end
+		end
+	end)
+end
+
+-- Elemente eines Containers nacheinander einblenden
+local function Stagger(container, step, t)
+	if not Anim() then return end
+	local kids = {}
+	for _, c in ipairs(container:GetChildren()) do
+		if c:IsA("GuiObject") and c.Visible then table.insert(kids, c) end
+	end
+	table.sort(kids, function(a, b) return a.LayoutOrder < b.LayoutOrder end)
+	for i, c in ipairs(kids) do
+		FadeIn(c, t or 0.3, math.min(i - 1, 14) * (step or 0.035))
+	end
+end
+
 -- Pop-Animation beim Öffnen/Schließen von Fenstern
 local popToken = setmetatable({}, { __mode = "k" })
-local function PopIn(frame)
+local function PopIn(frame, slide)
 	popToken[frame] = (popToken[frame] or 0) + 1
 	local s = frame:FindFirstChildOfClass("UIScale")
 	frame.Visible = true
+	if not Anim() then
+		if s then s.Scale = Library._base end
+		return
+	end
 	if s then
 		s.Scale = Library._base * 0.9
-		Tween(s, { Scale = Library._base }, 0.3, Enum.EasingStyle.Back)
+		Tween(s, { Scale = Library._base }, 0.35, Enum.EasingStyle.Back)
+	end
+	if slide then
+		local final = frame.Position
+		frame.Position = final + UDim2.fromOffset(slide.X, slide.Y)
+		Tween(frame, { Position = final }, 0.4, Enum.EasingStyle.Quint)
 	end
 end
 local function PopOut(frame)
 	popToken[frame] = (popToken[frame] or 0) + 1
 	local my = popToken[frame]
 	local s = frame:FindFirstChildOfClass("UIScale")
-	if not s then frame.Visible = false return end
+	if not s or not Anim() then frame.Visible = false return end
 	local tw = Tween(s, { Scale = Library._base * 0.9 }, 0.14, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 	tw.Completed:Connect(function()
 		if popToken[frame] == my then
@@ -477,7 +561,7 @@ function Library:Notify(opts)
 	if not self._notifHolder or not self._notifHolder.Parent then
 		self._notifHolder = New("Frame", {
 			BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -12, 1, -12),
-			Size = UDim2.fromOffset(290, 600), ZIndex = 1000, Parent = gui,
+			Size = UDim2.fromOffset(290, 600), ZIndex = 100000, Parent = gui,
 		}, { New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Bottom, Padding = UDim.new(0, 6) }) })
 	end
 	local holder = New("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 58), ZIndex = 1000, Parent = self._notifHolder })
@@ -525,7 +609,7 @@ function Library:ShowLoadingScreen(opts)
 
 	local frame = New("Frame", {
 		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(400, 150),
-		BackgroundColor3 = Theme.Background, BackgroundTransparency = 0.05, BorderSizePixel = 0, ZIndex = 2000, Parent = gui,
+		BackgroundColor3 = Theme.Background, BackgroundTransparency = 0.05, BorderSizePixel = 0, ZIndex = 200000, Parent = gui,
 	}, { Corner(12) })
 	AddScale(frame)
 	AnimatedStroke(frame, 1.5)
@@ -541,11 +625,33 @@ function Library:ShowLoadingScreen(opts)
 		Size = UDim2.new(1, -20, 1, -20), Position = UDim2.fromOffset(10, 10), BackgroundTransparency = 1, Image = Asset(opts.Logo or self.Assets.Logo),
 		ScaleType = Enum.ScaleType.Fit, ZIndex = 4, Parent = logoBox,
 	})
-	New("TextLabel", {
+	local titleText = opts.Title or "Rift"
+	local title = New("TextLabel", {
 		Size = UDim2.new(1, -166, 0, 24), Position = UDim2.fromOffset(150, 30), BackgroundTransparency = 1, Font = FontBold,
-		Text = opts.Title or "Rift", TextColor3 = Theme.Text, TextSize = 18, TextXAlignment = Enum.TextXAlignment.Left,
+		Text = titleText, TextColor3 = Theme.Text, TextSize = 18, TextXAlignment = Enum.TextXAlignment.Left,
 		TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 3, Parent = frame,
 	})
+	if Anim() then
+		-- Schreibmaschinen-Effekt
+		title.MaxVisibleGraphemes = 0
+		task.spawn(function()
+			for i = 1, #titleText do
+				if not title.Parent then return end
+				title.MaxVisibleGraphemes = i
+				task.wait(0.045)
+			end
+			title.MaxVisibleGraphemes = -1
+		end)
+		-- Logo "atmet"
+		local ls2 = New("UIScale", { Parent = logoBox })
+		task.spawn(function()
+			while logoBox.Parent do
+				Tween(ls2, { Scale = 1.05 }, 0.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut).Completed:Wait()
+				if not logoBox.Parent then break end
+				Tween(ls2, { Scale = 1 }, 0.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut).Completed:Wait()
+			end
+		end)
+	end
 	local status = New("TextLabel", {
 		Size = UDim2.new(1, -166, 0, 18), Position = UDim2.fromOffset(150, 56), BackgroundTransparency = 1, Font = Font,
 		Text = steps[1], TextColor3 = Theme.SubText, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 3, Parent = frame,
@@ -560,7 +666,7 @@ function Library:ShowLoadingScreen(opts)
 		TextColor3 = Lighten(self.Accent, 0.4), TextSize = 11, TextXAlignment = Enum.TextXAlignment.Right, ZIndex = 3, Parent = frame,
 	})
 
-	PopIn(frame)
+	PopIn(frame, Vector2.new(0, 14))
 	local tw = Tween(fill, { Size = UDim2.new(1, 0, 1, 0) }, dur, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut)
 	local start = os.clock()
 	while tw.PlaybackState == Enum.PlaybackState.Playing or tw.PlaybackState == Enum.PlaybackState.Begin do
@@ -1017,6 +1123,7 @@ function Module:AddDropdown(opts)
 		if state then
 			listFrame.Size = UDim2.new(1, -16, 0, listHeight())
 			listFrame.Visible = true
+			Stagger(scroll, 0.025, 0.22)
 		end
 		Tween(row, { Size = UDim2.new(1, 0, 0, state and (ROW + 2 + listHeight() + 8) or ROW) }, 0.25)
 		Tween(arrow, { Rotation = state and 180 or 0 }, 0.2)
@@ -1144,6 +1251,7 @@ function Module:AddSelector(opts)
 			TextSize = 12, TextColor3 = Theme.SubText, LayoutOrder = i, ZIndex = 3, Parent = holder,
 		}, { Corner(5), Stroke(Theme.Stroke, 1, 0.3) })
 		btns[v] = b
+		Ripple(b)
 		b.MouseButton1Click:Connect(function() ClickFlash(b); opt:Set(v) end)
 	end
 	OnAccent(function() paint() end)
@@ -1467,7 +1575,10 @@ function Window:OpenModule(m)
 	self._open[mod] = true
 	self:_Place(mod)
 	Front(mod._frame)
-	if not self._minimized then PopIn(mod._frame) end
+	if not self._minimized then
+		PopIn(mod._frame, Vector2.new(-24, 0))
+		mod._reveal()
+	end
 	if mod._refresh then mod._refresh() end
 	if mod == self._settings then self._settingsVisual(true) end
 end
@@ -1510,12 +1621,38 @@ function Window:Maximize()
 	if not self._minimized then return end
 	self._minimized = false
 	PopOut(self._circle)
-	PopIn(self._main)
-	for mod in pairs(self._open) do PopIn(mod._frame) end
+	PopIn(self._main, Vector2.new(0, 16))
+	self:_RevealList()
+	for mod in pairs(self._open) do
+		PopIn(mod._frame, Vector2.new(-24, 0))
+		mod._reveal()
+	end
 end
 
 function Window:Toggle()
 	if self._minimized then self:Maximize() else self:Minimize() end
+end
+
+-- Modul-Liste nacheinander reinsliden lassen
+function Window:_RevealList()
+	if not Anim() then return end
+	local i = 0
+	for _, mod in ipairs(self._listed) do
+		if mod._btn and mod._btn.Visible then
+			local active = self._open[mod] == true
+			local d = math.min(i, 12) * 0.04
+			i = i + 1
+			mod._btn.BackgroundTransparency = 1
+			mod._label.TextTransparency = 1
+			mod._arrow.TextTransparency = 1
+			mod._label.Position = UDim2.fromOffset(34, 0)
+			task.delay(d, function()
+				Tween(mod._btn, { BackgroundTransparency = active and 0.05 or 0.35 }, 0.3, Enum.EasingStyle.Quad)
+				Tween(mod._label, { TextTransparency = 0, Position = UDim2.fromOffset(16, 0) }, 0.4, Enum.EasingStyle.Quint)
+				Tween(mod._arrow, { TextTransparency = 0 }, 0.4, Enum.EasingStyle.Quad)
+			end)
+		end
+	end
 end
 
 function Window:AddModule(opts)
@@ -1551,6 +1688,7 @@ function Window:AddModule(opts)
 		AutoButtonColor = false, Font = FontBold, Text = "×", TextSize = 16, TextColor3 = Theme.Text, ZIndex = 4, Parent = header,
 	}, { Corner(6), Stroke(Theme.Stroke, 1, 0.3) })
 	HoverBg(close, function() return Theme.ElementAlt end, function() return Theme.DangerHover end)
+	Ripple(close)
 	close.MouseButton1Click:Connect(function() window:CloseModule(mod) end)
 	Separator(frame, 42)
 	MakeDraggable(header, frame, nil, function(moved) if moved then mod._moved = true end end)
@@ -1562,7 +1700,15 @@ function Window:AddModule(opts)
 	})
 	Accent(content, "ScrollBarImageColor3")
 	local layout = New("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder, Parent = content })
-	Pad(10, 12, 2, 8).Parent = content
+	local pad = Pad(10, 12, 2, 8)
+	pad.Parent = content
+	mod._reveal = function()
+		content.CanvasPosition = Vector2.new(0, 0)
+		if not Anim() then return end
+		pad.PaddingTop = UDim.new(0, 18)
+		Tween(pad, { PaddingTop = UDim.new(0, 2) }, 0.45, Enum.EasingStyle.Quint)
+		Stagger(content, 0.035, 0.3)
+	end
 	local function resize()
 		local k = scale.Scale > 0 and scale.Scale or 1
 		local h = layout.AbsoluteContentSize.Y / k + 10 + 54
@@ -1604,12 +1750,24 @@ function Window:AddModule(opts)
 			Tween(arrow, { TextColor3 = active and ContrastText(Library.Accent) or Theme.SubText, Rotation = active and 90 or 0 }, 0.22)
 			Tween(ind, { BackgroundTransparency = active and 0 or 1 }, 0.22)
 			label.Font = active and FontBold or Font
+			Tween(label, { Position = UDim2.fromOffset(16, 0) }, 0.22)
 		end
 		OnAccent(function() mod._refresh() end)
-		btn.MouseEnter:Connect(function() if not window._open[mod] then Tween(btn, { BackgroundColor3 = Theme.Hover }, 0.15) end end)
-		btn.MouseLeave:Connect(function() if not window._open[mod] then Tween(btn, { BackgroundColor3 = Theme.Element }, 0.15) end end)
+		btn.MouseEnter:Connect(function()
+			if window._open[mod] then return end
+			Tween(btn, { BackgroundColor3 = Theme.Hover }, 0.15)
+			if Anim() then Tween(label, { Position = UDim2.fromOffset(21, 0), TextColor3 = Theme.Text }, 0.2) end
+		end)
+		btn.MouseLeave:Connect(function()
+			if window._open[mod] then return end
+			Tween(btn, { BackgroundColor3 = Theme.Element }, 0.15)
+			Tween(label, { Position = UDim2.fromOffset(16, 0), TextColor3 = Theme.SubText }, 0.2)
+		end)
+		Ripple(btn)
 		btn.MouseButton1Click:Connect(function() ClickFlash(btn); window:ToggleModule(mod) end)
 		mod._btn = btn
+		mod._label = label
+		mod._arrow = arrow
 		table.insert(self._listed, mod)
 	end
 	return mod
@@ -1665,6 +1823,7 @@ function Library:CreateWindow(opts)
 		AutoButtonColor = false, Font = FontBold, Text = "—", TextSize = 13, TextColor3 = Theme.Text, ZIndex = 4, Parent = header,
 	}, { Corner(6), Stroke(Theme.Stroke, 1, 0.3) })
 	HoverBg(minBtn, function() return Theme.ElementAlt end, function() return Theme.Hover end)
+	Ripple(minBtn)
 	Separator(main, 46)
 
 	-- Hauptfenster ziehen: angedockte Modul-Fenster ziehen mit
@@ -1715,11 +1874,12 @@ function Library:CreateWindow(opts)
 	end
 	OnAccent(function() if settingsOpen then win._settingsVisual(true) end end)
 	HoverBg(settingsBtn, function() return Theme.ElementAlt end, function() return Theme.Hover end)
+	Ripple(settingsBtn)
 
 	-- Runder Button (nur sichtbar wenn minimiert; auch für Handy)
 	local circle = New("ImageButton", {
 		Name = RandomString(8), AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 8), Size = UDim2.fromOffset(52, 52),
-		BackgroundColor3 = Theme.Panel, BackgroundTransparency = 0.08, AutoButtonColor = false, Image = "", Visible = false, ZIndex = 900, Parent = gui,
+		BackgroundColor3 = Theme.Panel, BackgroundTransparency = 0.08, AutoButtonColor = false, Image = "", Visible = false, ZIndex = 90000, Parent = gui,
 	}, { Round() })
 	AddScale(circle)
 	AnimatedStroke(circle, 2)
@@ -1728,8 +1888,29 @@ function Library:CreateWindow(opts)
 		Image = Asset(self.Assets.Logo), ScaleType = Enum.ScaleType.Fit, ZIndex = 901, Parent = circle,
 	})
 	win._circle = circle
+	-- Pulsierender Ring solange minimiert
+	local ring = New("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1, ZIndex = 899, Parent = circle,
+	}, { Round() })
+	local ringStroke = Stroke(self.Accent, 2, 1)
+	ringStroke.Parent = ring
+	Accent(ringStroke, "Color")
+	task.spawn(function()
+		while gui.Parent do
+			if circle.Visible and Anim() then
+				ring.Size = UDim2.fromScale(1, 1)
+				ringStroke.Transparency = 0.15
+				Tween(ring, { Size = UDim2.fromScale(1.7, 1.7) }, 1.2, Enum.EasingStyle.Quad)
+				Tween(ringStroke, { Transparency = 1 }, 1.2, Enum.EasingStyle.Quad)
+				task.wait(1.7)
+			else
+				task.wait(0.3)
+			end
+		end
+	end)
 	MakeDraggable(circle, circle, nil, function(moved)
-		if not moved then ClickFlash(circle); win:Maximize() end
+		if not moved then win:Maximize() end
 	end)
 
 	minBtn.MouseButton1Click:Connect(function() win:Minimize() end)
@@ -1749,6 +1930,7 @@ function Library:CreateWindow(opts)
 		Name = "Minimize Key", Default = opts.MenuKey or Enum.KeyCode.RightShift, Mode = "Press", NoSave = true,
 		Callback = function() win:Toggle() end,
 	})
+	settings:AddToggle({ Name = "Animations", Default = self.Animations ~= false, NoSave = true, Callback = function(v) Library.Animations = v end })
 	settings:AddButton({ Name = "Close all windows", Text = "Close", Style = "plain", Callback = function()
 		for mod in pairs(win._open) do if mod ~= settings then win:CloseModule(mod) end end
 	end })
@@ -1813,9 +1995,10 @@ function Library:CreateWindow(opts)
 		Callback = function(c) Library:SetAccent(c) end,
 	})
 
-	-- Einblenden
+	-- Einblenden (Liste erst, wenn die Module hinzugefügt wurden)
 	Front(main)
-	PopIn(main)
+	PopIn(main, Vector2.new(0, 16))
+	task.defer(function() win:_RevealList() end)
 	return win
 end
 
