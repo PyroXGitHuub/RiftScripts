@@ -27,7 +27,7 @@
 
 	  Library:Notify({ Title, Content, Duration })
 	  Library:SaveConfig(name) / LoadConfig(name) / DeleteConfig(name) / ListConfigs()
-	  Library:SetAccent(Color3) / Library:Unload()
+	  Library:SetAccent(Color3) / Library:Unload() / Library:OnUnload(fn)
 ]]
 
 local genv = (getgenv and getgenv()) or _G
@@ -74,6 +74,7 @@ local Library = {
 	_z = 10,
 	_listening = false,
 	_windows = {},
+	_unloadFns = {},
 }
 
 local Theme = {
@@ -2002,7 +2003,14 @@ function Library:CreateWindow(opts)
 	return win
 end
 
+-- Wird beim Unload aufgerufen (z.B. um Speed, Fly, ESP usw. zurückzusetzen)
+function Library:OnUnload(fn)
+	table.insert(self._unloadFns, fn)
+end
+
 function Library:Unload()
+	for _, fn in ipairs(self._unloadFns or {}) do pcall(fn) end
+	self._unloadFns = {}
 	if activeListen then activeListen:Disconnect() activeListen = nil end
 	for _, c in ipairs(self._conns) do pcall(function() c:Disconnect() end) end
 	self._conns = {}
