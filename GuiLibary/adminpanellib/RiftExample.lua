@@ -4,7 +4,7 @@
 ]]
 
 local GUI_VERSION = "v1.0.0" -- wird in Settings als "GUI Version" angezeigt
-local LIB_URL = "https://raw.githubusercontent.com/PyroXGitHuub/RiftScripts/main/RiftLib.lua"
+local LIB_URL = "https://raw.githubusercontent.com/PyroXGitHuub/RiftScripts/refs/heads/main/GuiLibary/adminpanellib/RiftLib.lua"
 
 local Library = loadstring(game:HttpGet(LIB_URL))()
 
