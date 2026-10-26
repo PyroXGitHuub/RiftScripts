@@ -11,7 +11,13 @@ local CoreGui = game:GetService("CoreGui")
 local HttpService = game:GetService("HttpService")
 local GroupService = game:GetService("GroupService")
 local RunService = game:GetService("RunService")
+
+-- Sicherstellen, dass LocalPlayer existiert
 local LocalPlayer = Players.LocalPlayer
+while not LocalPlayer do
+    Players.PlayerAdded:Wait()
+    LocalPlayer = Players.LocalPlayer
+end
 
 -- Hier kannst du zusätzliche Gruppen-IDs eintragen, die immer überwacht werden sollen
 local customGroupIds = {
@@ -77,6 +83,28 @@ local httpRequest = (env.syn and env.syn.request)
     or env.request
     or (typeof(request) == "function" and request)
 
+-- Hilfsfunktion: Verhindert, dass Roblox-Yield-Funktionen (wie GetGroupInfoAsync) das Script unendlich blockieren
+local function callWithTimeout(fn, timeout)
+    local done = false
+    local success, result = false, nil
+
+    task.spawn(function()
+        local ok, res = pcall(fn)
+        if not done then
+            done = true
+            success = ok
+            result = res
+        end
+    end)
+
+    local start = os.clock()
+    while not done and (os.clock() - start) < (timeout or 5) do
+        task.wait(0.05)
+    end
+    done = true
+    return success, result
+end
+
 local function playAlertSound()
     task.spawn(function()
         local sound = Instance.new("Sound")
@@ -132,9 +160,9 @@ local function serverHop()
 end
 
 local function getUserHeadshot(userId)
-    local success, content = pcall(function()
+    local success, content = callWithTimeout(function()
         return Players:GetUserThumbnailAsync(userId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
-    end)
+    end, 4)
     if success and content then return content end
     return "rbxassetid://0"
 end
@@ -387,7 +415,7 @@ PanelHop.MouseButton1Click:Connect(function()
     serverHop()
 end)
 
--- Pfeil-Tabs (hängen am oberen Bildschirmrand bzw. unten am Panel)
+-- Pfeil-Tabs
 local function makeChevron(parent, up)
     local holder = Create("Frame", {
         AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.new(0, 16, 0, 10), Position = UDim2.new(0.5, 0, 0.5, 0),
@@ -432,7 +460,6 @@ local function makeTab(parent, up)
     return b, holder
 end
 
--- Ein einziger Button: hängt unten am Panel. Zu = nur der Button schaut oben raus, Klick = Panel slidet herunter
 local Tab, TabChevron = makeTab(Panel, false)
 Tab.Size = UDim2.new(0, 72, 0, 30)
 Tab.Position = UDim2.new(0.5, 0, 1, 3)
@@ -544,9 +571,9 @@ local function checkPlayer(player, isStartup)
     task.spawn(function()
         local best = nil
         for _, g in ipairs(trackedGroups) do
-            local ok, rank = pcall(function() return player:GetRankInGroup(g.id) end)
+            local ok, rank = callWithTimeout(function() return player:GetRankInGroup(g.id) end, 4)
             if ok and rank and rank > g.baseRank and rank >= (minStaffRank or 0) then
-                local okRole, roleName = pcall(function() return player:GetRoleInGroup(g.id) end)
+                local okRole, roleName = callWithTimeout(function() return player:GetRoleInGroup(g.id) end, 4)
                 if not best or rank > best.rank then
                     best = { rank = rank, role = (okRole and roleName) or ("Rank " .. rank), group = g.name, groupId = g.id }
                 end
@@ -576,43 +603,118 @@ local function checkPlayer(player, isStartup)
     end)
 end
 
--- Gruppe laden: Standard-Rolle = niedrigste Rolle mit Rank > 0
+-- Web-API Fallback falls GroupService:GetGroupInfoAsync() hängt oder fehlschlägt
+local function fetchGroupViaHttp(groupId)
+    if not httpRequest then return nil end
+    local info = { Name = "Group " .. groupId, Roles = {} }
+
+    local ok1, res1 = pcall(function()
+        return httpRequest({ Url = "https://groups.roblox.com/v1/groups/" .. tostring(groupId), Method = "GET" })
+    end)
+    if ok1 and res1 and res1.Body then
+        local okDec, dec = pcall(function() return HttpService:JSONDecode(res1.Body) end)
+        if okDec and dec and dec.name then
+            info.Name = dec.name
+        end
+    end
+
+    local ok2, res2 = pcall(function()
+        return httpRequest({ Url = "https://groups.roblox.com/v1/groups/" .. tostring(groupId) .. "/roles", Method = "GET" })
+    end)
+    if ok2 and res2 and res2.Body then
+        local okDec, dec = pcall(function() return HttpService:JSONDecode(res2.Body) end)
+        if okDec and dec and dec.roles then
+            for _, r in ipairs(dec.roles) do
+                if r.rank and r.name then
+                    table.insert(info.Roles, { Rank = r.rank, Name = r.name })
+                end
+            end
+        end
+    end
+
+    if #info.Roles > 0 then
+        return info
+    end
+    return nil
+end
+
+-- Gruppe laden: Mit Timeout & HTTP-Fallback
 local function addGroup(groupId)
+    if not groupId or groupId <= 0 then return end
     for _, g in ipairs(trackedGroups) do
         if g.id == groupId then return end
     end
+
     local entry = { id = groupId, name = "Group " .. groupId, baseRank = 1 }
-    local ok, info = pcall(function() return GroupService:GetGroupInfoAsync(groupId) end)
+    
+    -- 1. Versuch: GroupService mit 5s Timeout
+    local ok, info = callWithTimeout(function()
+        return GroupService:GetGroupInfoAsync(groupId)
+    end, 5)
+
+    -- 2. Versuch (Fallback): Direkte Roblox Web-API, falls GroupService hängt/fehlschlägt
+    if not ok or not info then
+        info = fetchGroupViaHttp(groupId)
+        ok = (info ~= nil)
+    end
+
     if ok and info then
         entry.name = info.Name or entry.name
         local lowest
         for _, r in ipairs(info.Roles or {}) do
-            if r.Rank > 0 and (not lowest or r.Rank < lowest.Rank) then lowest = r end
+            if r.Rank > 0 and (not lowest or r.Rank < lowest.Rank) then
+                lowest = r
+            end
         end
         if lowest then
             entry.baseRank = lowest.Rank
             entry.baseName = lowest.Name
         end
     end
+
     table.insert(trackedGroups, entry)
+end
+
+local function updateGroupLabel()
+    if #trackedGroups > 0 then
+        local names = {}
+        for _, g in ipairs(trackedGroups) do
+            names[#names + 1] = g.name .. (g.baseName and (" (Member: " .. g.baseName .. ")") or "")
+        end
+        GroupInfoLbl.Text = table.concat(names, ", ")
+    else
+        if game.CreatorType == Enum.CreatorType.User then
+            GroupInfoLbl.Text = "User-Game (Keine Spiel-Gruppe)"
+        else
+            GroupInfoLbl.Text = "Keine Gruppe gefunden (customGroupIds leer)"
+        end
+    end
 end
 
 -- ===== Hauptablauf =====
 task.spawn(function()
-    if game.CreatorType == Enum.CreatorType.Group then
+    -- Warten bis das Spiel Basis-Daten geladen hat (max. 5 Sekunden)
+    if not game:IsLoaded() then
+        callWithTimeout(function() game.Loaded:Wait() end, 5)
+    end
+
+    -- Falls CreatorId noch 0 ist, kurz warten
+    local waitStart = os.clock()
+    while game.CreatorId == 0 and (os.clock() - waitStart) < 3 do
+        task.wait(0.1)
+    end
+
+    if game.CreatorType == Enum.CreatorType.Group and game.CreatorId > 0 then
+        GroupInfoLbl.Text = "Loading group (" .. tostring(game.CreatorId) .. ")..."
         addGroup(game.CreatorId)
     end
-    for _, gid in ipairs(customGroupIds) do addGroup(gid) end
 
-    if #trackedGroups > 0 then
-        local names = {}
-        for _, g in ipairs(trackedGroups) do
-            names[#names + 1] = g.name .. (g.baseName and (" (Standard: " .. g.baseName .. ")") or "")
-        end
-        GroupInfoLbl.Text = table.concat(names, ", ")
-    else
-        GroupInfoLbl.Text = "Keine Gruppe gefunden - trage IDs in customGroupIds ein"
+    for _, gid in ipairs(customGroupIds) do
+        addGroup(gid)
     end
+
+    -- UI sofort aktualisieren
+    updateGroupLabel()
     refreshCount()
 
     playAlertSound()
