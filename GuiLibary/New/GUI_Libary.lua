@@ -44,6 +44,7 @@ local HttpService = game:GetService("HttpService")
 local CoreGui = game:GetService("CoreGui")
 local RunService = game:GetService("RunService")
 local TextService = game:GetService("TextService")
+local ContextActionService = game:GetService("ContextActionService")
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
@@ -2027,6 +2028,10 @@ function Library.New(titleText, customThemeColor)
                 if not ScreenGui.Parent or not menuOpen then
                     return
                 end
+                -- Rechtsklick gehalten = Kamera drehen (Standard-Kamera / Spiel darf die Maus selbst sperren)
+                if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+                    return
+                end
                 UserInputService.MouseBehavior = Enum.MouseBehavior.Default
                 UserInputService.MouseIconEnabled = true
             end)
@@ -2134,6 +2139,35 @@ function Library.New(titleText, customThemeColor)
         end)
     end
 
+    -- Menue-Taste per ContextActionService (hohe Prioritaet + Sink): das Spiel bekommt die Taste
+    -- nicht mehr, d.h. Shift-Lock wird NICHT mehr umgeschaltet wenn RightShift das Menue oeffnet.
+    local casBound = false
+    local function BindMenuAction()
+        pcall(function() ContextActionService:UnbindAction("PyroXMenuKey") end)
+        casBound = false
+        if IsMobile then return end
+        local k =Library.Flags[menuKeyFlag]
+        if typeof(k) == "string" then
+            k = Enum.KeyCode[k]
+        end
+        if typeof(k) ~= "EnumItem" or k == Enum.KeyCode.None or k.EnumType ~= Enum.KeyCode then
+            return
+        end
+        local ok = pcall(function()
+            ContextActionService:BindActionAtPriority("PyroXMenuKey", function(_, state)
+                if bindingMenuKey then
+                    return Enum.ContextActionResult.Pass
+                end
+                if state == Enum.UserInputState.Begin then
+                    ToggleMainMenu(not menuOpen)
+                end
+                return Enum.ContextActionResult.Sink
+            end, false, Enum.ContextActionPriority.High.Value + 2000, k)
+        end)
+        casBound = ok
+    end
+    pcall(function() ContextActionService:UnbindAction("PyroXMenuKey") end)
+
     UserInputService.InputBegan:Connect(function(input, gameProcessed)
         if bindingMenuKey then
             local validKey = false
@@ -2155,8 +2189,9 @@ function Library.New(titleText, customThemeColor)
                 MenuKeyButton.Text = keyName
                 bindingMenuKey = false
                 UpdateKeyHint()
+                BindMenuAction()
             end
-        elseif ShouldHandleKey(input, gameProcessed) then
+        elseif not casBound and ShouldHandleKey(input, gameProcessed) then
             local targetKey = Library.Flags[menuKeyFlag]
             if typeof(targetKey) == "string" then
                 pcall(function()
@@ -2182,8 +2217,10 @@ function Library.New(titleText, customThemeColor)
             local currentKey = Library.Flags[menuKeyFlag]
             MenuKeyButton.Text = (typeof(currentKey) == "EnumItem" and currentKey ~= Enum.KeyCode.None) and currentKey.Name or "RightShift"
             UpdateKeyHint()
+            BindMenuAction()
         end
     end)
+    BindMenuAction()
 
     local sideTabs = {}
     local firstSideTab = true
