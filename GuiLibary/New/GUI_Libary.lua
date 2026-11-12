@@ -1,5 +1,5 @@
 --[[
-    PyroX GUI Library  ·  v3.2.0  (PC Layout + Mobile Keys)
+    PyroX GUI Library  ·  v3.3.0  (Loading Screen)
     ------------------------------------------------------------
     API ist 1:1 kompatibel mit v2.x:
       Library.New / Window:AddTab / Tab:AddSubTab
@@ -56,7 +56,7 @@ if not success or not parent then
     parent = PlayerGui
 end
 
-for _, oldName in ipairs({"SketchGUILibrary", "SketchGUILibrary_Mobile", "PyroXGUI_MobileKeys", "PyroXGUI_KeyPicker"}) do
+for _, oldName in ipairs({"SketchGUILibrary", "SketchGUILibrary_Mobile", "PyroXGUI_MobileKeys", "PyroXGUI_KeyPicker", "PyroXGUI_Loading"}) do
     local old = parent:FindFirstChild(oldName)
     if old then
         old:Destroy()
@@ -64,7 +64,7 @@ for _, oldName in ipairs({"SketchGUILibrary", "SketchGUILibrary_Mobile", "PyroXG
 end
 
 local Library = {}
-Library.Version = "v3.2.0"
+Library.Version = "v3.3.0"
 Library.ThemeColor = Library.ThemeColor or Color3.fromRGB(150, 90, 255)
 Library.Flags = {}
 Library.SettingsFileName = "" -- bewusst leer: der Nutzer muss selbst einen Namen wählen
@@ -79,6 +79,11 @@ Library.MobileMode = nil
 Library.IsMobile = false
 Library.IsPC = true
 Library.AutoUnlockMouse = true
+Library.ShowLoadingScreen = true
+Library.LoadingSound = true
+Library.LoadingSoundId = "rbxassetid://107366908379453"
+Library.LoadingSoundVolume = 0.6
+Library.LoadingBlur = true
 Library.MobileKeyButtons = {}
 Library.MobileKeysEditing = false
 Library.Font = Enum.Font.GothamMedium
@@ -3674,97 +3679,17 @@ function Library.New(titleText, customThemeColor)
     -- ==========================================
     -- LADEBILDSCHIRM
     -- ==========================================
-    -- Feste Logo-Farbe für den Ladebildschirm (unabhängig von der Theme-Farbe)
-    local LoadColor = Color3.fromRGB(168, 85, 247)
-    -- ==========================================
-    local LoadingFrame = Create("Frame", {
-        Name = "Loading",
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Size = UDim2.new(0, 400, 0, 150),
-        Position = UDim2.new(0.5, 0, 0.5, 0),
-        BackgroundColor3 = Theme.Background,
-        BackgroundTransparency = 0.05,
-        BorderSizePixel = 0,
-        ZIndex = 9999,
-        Parent = ScreenGui,
-    })
-    Corner(LoadingFrame, 12)
-    local LoadStroke = Stroke(LoadingFrame, Color3.new(1, 1, 1), 1.5, 0)
-    local LoadGrad = Create("UIGradient", {Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, LoadColor),
-        ColorSequenceKeypoint.new(0.5, Theme.Stroke),
-        ColorSequenceKeypoint.new(1, LoadColor),
-    }), Parent = LoadStroke})
-    AddScale(LoadingFrame)
-
-    local LoadMascot = Create("ImageLabel", {
-        Size = UDim2.new(0, 118, 0, 118),
-        Position = UDim2.new(0, 16, 0.5, -59),
-        BackgroundColor3 = Theme.Panel,
-        Image = LOGO,
-        ScaleType = Enum.ScaleType.Crop,
-        Parent = LoadingFrame,
-    })
-    Corner(LoadMascot, 10)
-    Stroke(LoadMascot, LoadColor, 1.5, 0.2)
-
-    Create("TextLabel", {
-        Size = UDim2.new(1, -166, 0, 24),
-        Position = UDim2.new(0, 150, 0, 30),
-        BackgroundTransparency = 1,
-        Font = Library.FontBold,
-        Text = titleText or "GUI Library",
-        TextColor3 = Theme.Text,
-        TextSize = 18,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        TextTruncate = Enum.TextTruncate.AtEnd,
-        Parent = LoadingFrame,
-    })
-
-    local SubTextLoad = Create("TextLabel", {
-        Size = UDim2.new(1, -166, 0, 18),
-        Position = UDim2.new(0, 150, 0, 56),
-        BackgroundTransparency = 1,
-        Font = Library.Font,
-        Text = "Loading Interface...",
-        TextColor3 = Theme.SubText,
-        TextSize = 13,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        Parent = LoadingFrame,
-    })
-
-    local BarBG = Create("Frame", {
-        Size = UDim2.new(1, -166, 0, 6),
-        Position = UDim2.new(0, 150, 0, 98),
-        BackgroundColor3 = Theme.Off,
-        BorderSizePixel = 0,
-        Parent = LoadingFrame,
-    })
-    Corner(BarBG, 3)
-
-    local BarFill = Create("Frame", {
-        Size = UDim2.new(0, 0, 1, 0),
-        BackgroundColor3 = LoadColor,
-        BorderSizePixel = 0,
-        Parent = BarBG,
-    })
-    Corner(BarFill, 3)
-    Shine(BarFill, 0)
-
-    local Percent = Create("TextLabel", {
-        Size = UDim2.new(1, -166, 0, 16),
-        Position = UDim2.new(0, 150, 0, 110),
-        BackgroundTransparency = 1,
-        Font = Library.FontBold,
-        Text = "0%",
-        TextColor3 = Lighten(LoadColor, 0.4),
-        TextSize = 11,
-        TextXAlignment = Enum.TextXAlignment.Right,
-        Parent = LoadingFrame,
-    })
-
-    -- Rotierender Rahmen-Verlauf
+    local LoadColor = Library.ThemeColor
     local rotConn
+    local StrokeGradLoad
+
+    local function OpenMenuNow()
+        MainFrame.Visible = true
+        isLoaded = true
+        ToggleMainMenu(true)
+    end
+
+    -- Dauerhafte Rotation des Rahmen-Verlaufs (Hauptfenster + Ladebildschirm)
     rotConn = RunService.RenderStepped:Connect(function(dt)
         if not ScreenGui.Parent then
             rotConn:Disconnect()
@@ -3772,31 +3697,377 @@ function Library.New(titleText, customThemeColor)
         end
         if ScreenGui.Enabled then
             StrokeGrad.Rotation = (StrokeGrad.Rotation + dt * 45) % 360
-            if LoadGrad.Parent then
-                LoadGrad.Rotation = StrokeGrad.Rotation
-            end
+        end
+        if StrokeGradLoad and StrokeGradLoad.Parent then
+            StrokeGradLoad.Rotation = (StrokeGradLoad.Rotation + dt * 90) % 360
         end
     end)
 
+    if Library.ShowLoadingScreen == false then
+        OpenMenuNow()
+        return Window
+    end
+
+    local LoadGui = Create("ScreenGui", {
+        Name = "PyroXGUI_Loading",
+        ResetOnSpawn = false,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        DisplayOrder = 100,
+        IgnoreGuiInset = true,
+        Parent = parent,
+    })
+
+    -- Bildschirm abdunkeln (+ leichter Blur)
+    local Backdrop = Create("Frame", {
+        Name = "Backdrop",
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Active = true,
+        ZIndex = 1,
+        Parent = LoadGui,
+    })
+    Create("UIGradient", {
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0),
+            NumberSequenceKeypoint.new(0.5, 0.12),
+            NumberSequenceKeypoint.new(1, 0),
+        }),
+        Rotation = 90,
+        Parent = Backdrop,
+    })
+    local BACKDROP_T = 0.12
+    Tween(Backdrop, 0.6, {BackgroundTransparency = BACKDROP_T})
+
+    local Blur
+    if Library.LoadingBlur ~= false then
+        pcall(function()
+            Blur = Instance.new("BlurEffect")
+            Blur.Name = "PyroXLoadingBlur"
+            Blur.Size = 0
+            Blur.Parent = game:GetService("Lighting")
+            TweenService:Create(Blur, TweenInfo.new(0.6), {Size = 16}):Play()
+        end)
+    end
+
+    -- Karte (CanvasGroup, damit alles gemeinsam einblendet)
+    local CARD_W, CARD_H = 540, 250
+    local Card = Create("CanvasGroup", {
+        Name = "Card",
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Size = UDim2.new(0, CARD_W, 0, CARD_H),
+        Position = UDim2.new(0.5, 0, 0.5, 0),
+        BackgroundColor3 = Theme.Background,
+        BackgroundTransparency = 0.04,
+        BorderSizePixel = 0,
+        GroupTransparency = 1,
+        ZIndex = 2,
+        Parent = LoadGui,
+    })
+    Corner(Card, 14)
+    local CardStroke = Stroke(Card, Color3.new(1, 1, 1), 1.5, 0)
+    StrokeGradLoad = Create("UIGradient", {Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, LoadColor),
+        ColorSequenceKeypoint.new(0.5, Theme.Stroke),
+        ColorSequenceKeypoint.new(1, LoadColor),
+    }), Parent = CardStroke})
+
+    local CardScale = Create("UIScale", {Parent = Card})
+    local function FitCard()
+        local vp = LoadGui.AbsoluteSize
+        if vp.X <= 0 or vp.Y <= 0 then
+            vp = Vector2.new(1280, 720)
+        end
+        CardScale.Scale = math.clamp(math.min((vp.X - 24) / CARD_W, (vp.Y - 24) / CARD_H), 0.45, 1.15)
+    end
+    FitCard()
+    LoadGui:GetPropertyChangedSignal("AbsoluteSize"):Connect(FitCard)
+
+    -- Hintergrund-Glow unten
+    local CardGlow = Create("Frame", {
+        Size = UDim2.new(1, 0, 0.6, 0),
+        Position = UDim2.new(0, 0, 0.4, 0),
+        BackgroundColor3 = LoadColor,
+        BorderSizePixel = 0,
+        ZIndex = 2,
+        Parent = Card,
+    })
+    Create("UIGradient", {
+        Rotation = 90,
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 1),
+            NumberSequenceKeypoint.new(1, 0.8),
+        }),
+        Parent = CardGlow,
+    })
+
+    -- Logo mit pulsierendem Ring
+    local LogoHolder = Create("Frame", {
+        Size = UDim2.new(0, 84, 0, 84),
+        Position = UDim2.new(0, 24, 0, 24),
+        BackgroundColor3 = Theme.Panel,
+        BorderSizePixel = 0,
+        ZIndex = 3,
+        Parent = Card,
+    })
+    Corner(LogoHolder, 18)
+    local LogoRing = Stroke(LogoHolder, LoadColor, 2, 0.2)
+    Create("ImageLabel", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Size = UDim2.new(0, 56, 0, 56),
+        Position = UDim2.new(0.5, 0, 0.5, 0),
+        BackgroundTransparency = 1,
+        Image = LOGO,
+        ZIndex = 4,
+        Parent = LogoHolder,
+    })
+    local pulseTween = TweenService:Create(LogoRing, TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {Transparency = 0.9, Thickness = 4})
+    pulseTween:Play()
+
+    Create("TextLabel", {
+        Size = UDim2.new(1, -150, 0, 28),
+        Position = UDim2.new(0, 126, 0, 24),
+        BackgroundTransparency = 1,
+        Font = Library.FontBold,
+        Text = titleText or "GUI Library",
+        TextColor3 = Theme.Text,
+        TextSize = 22,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        ZIndex = 4,
+        Parent = Card,
+    })
+
+    local StatusLabel = Create("TextLabel", {
+        Size = UDim2.new(1, -150, 0, 18),
+        Position = UDim2.new(0, 126, 0, 54),
+        BackgroundTransparency = 1,
+        Font = Library.Font,
+        Text = "Starting...",
+        TextColor3 = Lighten(LoadColor, 0.45),
+        TextSize = 13,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 4,
+        Parent = Card,
+    })
+
+    -- Info-Chips (Spiel, Modus, Version, Executor) - kein Spielername
+    local ChipRow = Create("Frame", {
+        Size = UDim2.new(1, -150, 0, 22),
+        Position = UDim2.new(0, 126, 0, 84),
+        BackgroundTransparency = 1,
+        ZIndex = 4,
+        Parent = Card,
+    })
+    Create("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 6),
+        Parent = ChipRow,
+    })
+    local function MakeChip(order, text, maxW)
+        local chip = Create("TextLabel", {
+            LayoutOrder = order,
+            Size = UDim2.new(0, 0, 1, 0),
+            AutomaticSize = Enum.AutomaticSize.X,
+            BackgroundColor3 = LoadColor,
+            BackgroundTransparency = 0.82,
+            Font = Library.FontBold,
+            Text = text,
+            TextColor3 = Lighten(LoadColor, 0.55),
+            TextSize = 11,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            ZIndex = 5,
+            Parent = ChipRow,
+        })
+        Corner(chip, 11)
+        Create("UIPadding", {PaddingLeft = UDim.new(0, 9), PaddingRight = UDim.new(0, 9), Parent = chip})
+        if maxW then
+            Create("UISizeConstraint", {MaxSize = Vector2.new(maxW, 22), Parent = chip})
+        end
+        return chip
+    end
+    local ChipMode = MakeChip(1, IsMobile and "MOBILE" or "PC")
+    local ChipVer = MakeChip(2, Library.Version)
+    local ChipGame = MakeChip(3, "Loading game...", 190)
+
     task.spawn(function()
-        local loadTween = TweenService:Create(BarFill, TweenInfo.new(2, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), {Size = UDim2.new(1, 0, 1, 0)})
-        loadTween:Play()
-        while loadTween.PlaybackState == Enum.PlaybackState.Playing or loadTween.PlaybackState == Enum.PlaybackState.Begin do
-            Percent.Text = tostring(math.floor(BarFill.Size.X.Scale * 100)) .. "%"
-            task.wait()
+        local name
+        pcall(function()
+            name = game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId).Name
+        end)
+        if not name or name == "" then
+            pcall(function() name = game.Name end)
+        end
+        if name and ChipGame.Parent then
+            ChipGame.Text = tostring(name)
+        end
+    end)
+
+    -- Tipp-Zeile
+    local TipLabel = Create("TextLabel", {
+        Size = UDim2.new(1, -48, 0, 34),
+        Position = UDim2.new(0, 24, 0, 128),
+        BackgroundTransparency = 1,
+        Font = Library.Font,
+        Text = "",
+        TextColor3 = Theme.SubText,
+        TextSize = 12,
+        TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Top,
+        ZIndex = 4,
+        Parent = Card,
+    })
+
+    -- Fortschrittsbalken
+    local BarBG = Create("Frame", {
+        Size = UDim2.new(1, -48, 0, 8),
+        Position = UDim2.new(0, 24, 0, 188),
+        BackgroundColor3 = Theme.Off,
+        BorderSizePixel = 0,
+        ZIndex = 4,
+        Parent = Card,
+    })
+    Corner(BarBG, 4)
+    local BarFill = Create("Frame", {
+        Size = UDim2.new(0, 0, 1, 0),
+        BackgroundColor3 = LoadColor,
+        BorderSizePixel = 0,
+        ZIndex = 5,
+        Parent = BarBG,
+    })
+    Corner(BarFill, 4)
+    Shine(BarFill, 0)
+
+    local InfoLabel = Create("TextLabel", {
+        Size = UDim2.new(1, -120, 0, 16),
+        Position = UDim2.new(0, 24, 0, 206),
+        BackgroundTransparency = 1,
+        Font = Library.Font,
+        Text = "PyroX GUI " .. Library.Version,
+        TextColor3 = Theme.SubText,
+        TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        ZIndex = 4,
+        Parent = Card,
+    })
+    local Percent = Create("TextLabel", {
+        AnchorPoint = Vector2.new(1, 0),
+        Size = UDim2.new(0, 80, 0, 16),
+        Position = UDim2.new(1, -24, 0, 206),
+        BackgroundTransparency = 1,
+        Font = Library.FontBold,
+        Text = "0%",
+        TextColor3 = Lighten(LoadColor, 0.45),
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        ZIndex = 4,
+        Parent = Card,
+    })
+    BarFill:GetPropertyChangedSignal("Size"):Connect(function()
+        Percent.Text = tostring(math.floor(BarFill.Size.X.Scale * 100)) .. "%"
+    end)
+
+    -- Ladesound
+    local LoadSound
+    if Library.LoadingSound ~= false then
+        task.spawn(function()
+            pcall(function()
+                local snd = Instance.new("Sound")
+                snd.Name = "PyroXLoadingSound"
+                snd.SoundId = Library.LoadingSoundId or "rbxassetid://107366908379453"
+                snd.Volume = Library.LoadingSoundVolume or 0.6
+                snd.Looped = false
+                snd.Parent = LoadGui
+                LoadSound = snd
+                if not snd.IsLoaded then
+                    local t0 = os.clock()
+                    repeat task.wait() until snd.IsLoaded or os.clock() - t0 > 1.5
+                end
+                snd:Play()
+            end)
+        end)
+    end
+
+    TweenService:Create(Card, TweenInfo.new(0.5, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {GroupTransparency = 0}):Play()
+
+    local function keyName()
+        local k = Library.Flags[menuKeyFlag]
+        return (typeof(k) == "EnumItem" and k ~= Enum.KeyCode.None) and k.Name or "RightShift"
+    end
+    local tips
+    if IsMobile then
+        tips = {
+            "Tap the round button at the top to open or close the menu.",
+            "Drag the round button to move it wherever you like.",
+            "Set a key in the menu to get a movable button on your screen.",
+            "Your settings can be saved and loaded in the Settings tab.",
+            "Almost there...",
+        }
+    else
+        tips = {
+            "Press [" .. keyName() .. "] to show or hide the menu.",
+            "Drag the top bar to move the window.",
+            "Hold right mouse button to move the camera while the menu is open.",
+            "Your settings can be saved and loaded in the Settings tab.",
+            "Almost there...",
+        }
+    end
+
+    local stages = {
+        {"Initializing...", 0.14, 0.55},
+        {"Loading modules...", 0.38, 0.8},
+        {"Building interface...", 0.66, 0.9},
+        {"Applying settings...", 0.88, 0.7},
+        {"Finalizing...", 1, 0.6},
+    }
+
+    task.spawn(function()
+        for i, st in ipairs(stages) do
+            StatusLabel.Text = st[1]
+            TipLabel.TextTransparency = 1
+            TipLabel.Text = tips[i] or ""
+            TweenService:Create(TipLabel, TweenInfo.new(0.3), {TextTransparency = 0}):Play()
+            if i == 5 then
+                local tabsN = #sideTabs
+                local featN = #Library.ElementUpdaters
+                InfoLabel.Text = tabsN .. " tabs  ·  " .. featN .. " features  ·  PyroX GUI " .. Library.Version
+                pcall(function()
+                    local exec = identifyexecutor()
+                    if exec then
+                        InfoLabel.Text = InfoLabel.Text .. "  ·  " .. tostring(exec)
+                    end
+                end)
+            end
+            Tween(BarFill, st[3], {Size = UDim2.new(st[2], 0, 1, 0)}, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut)
+            task.wait(st[3] + 0.05)
         end
         Percent.Text = "100%"
-        SubTextLoad.Text = "Finished!"
-        task.wait(0.5)
+        StatusLabel.Text = "Ready!"
+        task.wait(0.45)
 
-        -- Fade Out
-        FadeOut(LoadingFrame, 0.5)
-        task.wait(0.5)
-        LoadingFrame:Destroy()
-
-        MainFrame.Visible = true
-        isLoaded = true
-        ToggleMainMenu(true)
+        -- Ausblenden
+        if LoadSound then
+            pcall(function()
+                TweenService:Create(LoadSound, TweenInfo.new(0.5), {Volume = 0}):Play()
+            end)
+        end
+        pcall(function() pulseTween:Cancel() end)
+        TweenService:Create(Card, TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {GroupTransparency = 1}):Play()
+        TweenService:Create(Backdrop, TweenInfo.new(0.55), {BackgroundTransparency = 1}):Play()
+        if Blur then
+            pcall(function() TweenService:Create(Blur, TweenInfo.new(0.5), {Size = 0}):Play() end)
+        end
+        task.wait(0.4)
+        OpenMenuNow()
+        task.wait(0.2)
+        pcall(function() if Blur then Blur:Destroy() end end)
+        pcall(function() if LoadSound then LoadSound:Stop() end end)
+        LoadGui:Destroy()
+        StrokeGradLoad = nil
     end)
 
     return Window
