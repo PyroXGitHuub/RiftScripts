@@ -1292,25 +1292,6 @@ function Library.New(titleText, customThemeColor)
     Corner(VersionLabel, 10)
     Create("UIPadding", {PaddingLeft = UDim.new(0, 9), PaddingRight = UDim.new(0, 9), Parent = VersionLabel})
 
-    if IsPC then
-        local tw = TextService:GetTextSize(titleText or "GUI Library", 15, Library.FontBold, Vector2.new(1000, 30)).X
-        local badge = Create("TextLabel", {
-            Name = "PCBadge",
-            Size = UDim2.new(0, 0, 0, 20),
-            AutomaticSize = Enum.AutomaticSize.X,
-            Position = UDim2.new(0, 46 + tw + 12, 0.5, -10),
-            BackgroundColor3 = Library.ThemeColor,
-            BackgroundTransparency = 0.12,
-            Font = Library.FontBold,
-            Text = "PC EDITION",
-            TextColor3 = ContrastText(Library.ThemeColor),
-            TextSize = 10,
-            ZIndex = 3,
-            Parent = TopBar,
-        })
-        Corner(badge, 10)
-        Create("UIPadding", {PaddingLeft = UDim.new(0, 9), PaddingRight = UDim.new(0, 9), Parent = badge})
-    end
 
     local MobileCloseBtn
     do
@@ -1702,7 +1683,7 @@ function Library.New(titleText, customThemeColor)
         if not KeyHint then return end
         local k = Library.Flags[menuKeyFlag]
         local n = (typeof(k) == "EnumItem" and k ~= Enum.KeyCode.None) and k.Name or "RightShift"
-        KeyHint.Text = "PC EDITION\n[" .. n .. "] show / hide"
+        KeyHint.Text = "[" .. n .. "] show / hide"
     end
     UpdateKeyHint()
 
