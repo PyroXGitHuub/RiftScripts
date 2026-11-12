@@ -1,5 +1,5 @@
 --[[
-    PyroX GUI Library  ·  v3.1.0  (Remake)
+    PyroX GUI Library  ·  v3.3.0  (Loading Screen)
     ------------------------------------------------------------
     API ist 1:1 kompatibel mit v2.x:
       Library.New / Window:AddTab / Tab:AddSubTab
@@ -23,6 +23,18 @@
       Library.BackgroundImageTransparency = 0.25
       Library.MobileMode                  = nil   -- nil = auto, true/false = erzwingen
       Library.SettingsFileName            = "meinconfig" -- optional: wird beim Start automatisch geladen
+
+    NEU in v3.2.0 (alles optional, alte Scripts laufen unveraendert):
+      - PC-Layout: alle Sub-Tabs eines Tabs sind gleichzeitig als Karten sichtbar (2 Spalten).
+        Mobile bleibt wie bisher (Sub-Tab-Leiste oben).
+      - Shift-Lock / gameProcessed Fix: Menue-Taste und Keybinds funktionieren jetzt auch bei
+        aktivem Shift-Lock (nur wenn gerade nicht in ein TextFeld getippt wird).
+      - Maus wird beim Oeffnen des Menues freigegeben (First Person / Mouse-Lock Games)
+        und danach wiederhergestellt.   Library.AutoUnlockMouse = false  schaltet das ab.
+      - Mobile: Keybind / ToggleWithKey oeffnen eine Tastatur zum Auswaehlen. Fuer die gewaehlte
+        Taste entsteht ein Button auf dem Screen (zeigt den Key-Namen, frei verschiebbar solange
+        das Menue offen ist, antippen = Taste druecken).
+      - Library.IsPC / Library.IsMobile
 ]]
 
 local Players = game:GetService("Players")
@@ -32,6 +44,7 @@ local HttpService = game:GetService("HttpService")
 local CoreGui = game:GetService("CoreGui")
 local RunService = game:GetService("RunService")
 local TextService = game:GetService("TextService")
+local ContextActionService = game:GetService("ContextActionService")
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
@@ -43,7 +56,7 @@ if not success or not parent then
     parent = PlayerGui
 end
 
-for _, oldName in ipairs({"SketchGUILibrary", "SketchGUILibrary_Mobile"}) do
+for _, oldName in ipairs({"SketchGUILibrary", "SketchGUILibrary_Mobile", "PyroXGUI_MobileKeys", "PyroXGUI_KeyPicker", "PyroXGUI_Loading"}) do
     local old = parent:FindFirstChild(oldName)
     if old then
         old:Destroy()
@@ -51,7 +64,7 @@ for _, oldName in ipairs({"SketchGUILibrary", "SketchGUILibrary_Mobile"}) do
 end
 
 local Library = {}
-Library.Version = "v3.1.4"
+Library.Version = "v3.3.0"
 Library.ThemeColor = Library.ThemeColor or Color3.fromRGB(150, 90, 255)
 Library.Flags = {}
 Library.SettingsFileName = "" -- bewusst leer: der Nutzer muss selbst einen Namen wählen
@@ -64,6 +77,15 @@ Library.BackgroundTint = Color3.fromRGB(120, 115, 135)
 Library.BackgroundImageTransparency = 0.25
 Library.MobileMode = nil
 Library.IsMobile = false
+Library.IsPC = true
+Library.AutoUnlockMouse = true
+Library.ShowLoadingScreen = true
+Library.LoadingSound = true
+Library.LoadingSoundId = "rbxassetid://107366908379453"
+Library.LoadingSoundVolume = 0.6
+Library.LoadingBlur = true
+Library.MobileKeyButtons = {}
+Library.MobileKeysEditing = false
 Library.Font = Enum.Font.GothamMedium
 Library.FontBold = Enum.Font.GothamBold
 
@@ -149,6 +171,15 @@ end
 
 local function IsMove(input)
     return input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch
+end
+
+-- Tastatur-Eingaben gelten auch dann, wenn das Spiel sie "verbraucht" hat (z.B. Shift-Lock auf
+-- RightShift). Nur wenn gerade in ein TextFeld getippt wird, werden sie ignoriert.
+local function ShouldHandleKey(input, gameProcessed)
+    if input.UserInputType == Enum.UserInputType.Keyboard then
+        return UserInputService:GetFocusedTextBox() == nil
+    end
+    return not gameProcessed
 end
 
 local function AddHover(btn, base, hover)
@@ -478,6 +509,359 @@ local function ShowPopup(message)
     end)
 end
 
+
+-- ==========================================
+-- MOBILE: BUTTONS AUF DEM SCREEN + KEY-PICKER
+-- ==========================================
+
+local SHORT_KEYS = {
+    LeftShift = "LShift", RightShift = "RShift", LeftControl = "LCtrl", RightControl = "RCtrl",
+    LeftAlt = "LAlt", RightAlt = "RAlt", Backspace = "Bksp", Return = "Enter", Space = "Space",
+    Up = "Up", Down = "Down", Left = "Left", Right = "Right",
+    One = "1", Two = "2", Three = "3", Four = "4", Five = "5",
+    Six = "6", Seven = "7", Eight = "8", Nine = "9", Zero = "0",
+    MouseButton1 = "M1", MouseButton2 = "M2", MouseButton3 = "M3",
+}
+local function ShortKeyName(name)
+    return SHORT_KEYS[name] or tostring(name)
+end
+
+local MobileKeyGui
+local function GetMobileKeyGui()
+    if MobileKeyGui and MobileKeyGui.Parent then
+        return MobileKeyGui
+    end
+    MobileKeyGui = Create("ScreenGui", {
+        Name = "PyroXGUI_MobileKeys",
+        ResetOnSpawn = false,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        DisplayOrder = 15,
+        IgnoreGuiInset = true,
+        Parent = parent,
+    })
+    return MobileKeyGui
+end
+
+local function RefreshMobileKeyLook(obj)
+    local editing = Library.MobileKeysEditing
+    if obj.Stroke then
+        Tween(obj.Stroke, 0.2, {
+            Color = Library.ThemeColor,
+            Transparency = editing and 0 or 0.45,
+            Thickness = editing and 3 or 2,
+        })
+    end
+end
+
+function Library.SetMobileKeyEditing(on)
+    Library.MobileKeysEditing = on and true or false
+    for _, obj in ipairs(Library.MobileKeyButtons) do
+        RefreshMobileKeyLook(obj)
+    end
+end
+
+-- Erstellt einen Button auf dem Screen. onTap wird beim Antippen ausgefuehrt.
+-- posFlag: Flag-Name unter dem die Position (als Bildschirm-Anteil) gespeichert wird.
+function Library.CreateMobileKey(posFlag, onTap)
+    local gui = GetMobileKeyGui()
+    local obj = {}
+
+    local idx = #Library.MobileKeyButtons
+    local saved = Library.Flags[posFlag]
+    local sx, sy
+    if type(saved) == "table" and tonumber(saved.X) and tonumber(saved.Y) then
+        sx, sy = tonumber(saved.X), tonumber(saved.Y)
+    else
+        sx = 0.93 - 0.09 * math.floor(idx / 5)
+        sy = 0.22 + 0.13 * (idx % 5)
+    end
+
+    local btn = Create("TextButton", {
+        Name = "MobileKey",
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Size = UDim2.new(0, 54, 0, 54),
+        Position = UDim2.new(sx, 0, sy, 0),
+        BackgroundColor3 = Theme.Panel,
+        BackgroundTransparency = 0.1,
+        AutoButtonColor = false,
+        Font = Library.FontBold,
+        Text = "?",
+        TextColor3 = Theme.Text,
+        TextScaled = true,
+        ZIndex = 5,
+        Parent = gui,
+    })
+    Corner(btn, 27)
+    obj.Stroke = Stroke(btn, Library.ThemeColor, 2, 0.45)
+    Create("UIPadding", {
+        PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8),
+        PaddingTop = UDim.new(0, 14), PaddingBottom = UDim.new(0, 14),
+        Parent = btn,
+    })
+    Create("UITextSizeConstraint", {MaxTextSize = 18, MinTextSize = 8, Parent = btn})
+
+    local pressed, moved = false, false
+    local startPos, startScale
+    local conns = {}
+
+    btn.InputBegan:Connect(function(input)
+        if IsPress(input) then
+            pressed = true
+            moved = false
+            startPos = input.Position
+            startScale = Vector2.new(btn.Position.X.Scale, btn.Position.Y.Scale)
+            local c
+            c = input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    c:Disconnect()
+                    if not pressed then return end
+                    pressed = false
+                    if moved then
+                        Library.Flags[posFlag] = {X = btn.Position.X.Scale, Y = btn.Position.Y.Scale}
+                    else
+                        ClickFlash(btn)
+                        if onTap then
+                            task.spawn(onTap)
+                        end
+                    end
+                end
+            end)
+        end
+    end)
+
+    table.insert(conns, UserInputService.InputChanged:Connect(function(input)
+        if pressed and IsMove(input) and Library.MobileKeysEditing then
+            local d = input.Position - startPos
+            if d.Magnitude > 6 then
+                moved = true
+            end
+            if moved then
+                local vp = gui.AbsoluteSize
+                if vp.X > 0 and vp.Y > 0 then
+                    btn.Position = UDim2.new(
+                        math.clamp(startScale.X + d.X / vp.X, 0.03, 0.97), 0,
+                        math.clamp(startScale.Y + d.Y / vp.Y, 0.05, 0.95), 0)
+                end
+            end
+        end
+    end))
+
+    function obj:SetKey(name)
+        btn.Text = ShortKeyName(name)
+    end
+    function obj:SetPos(x, y)
+        if tonumber(x) and tonumber(y) then
+            btn.Position = UDim2.new(tonumber(x), 0, tonumber(y), 0)
+        end
+    end
+    function obj:SetActive(state)
+        Tween(btn, 0.2, {
+            BackgroundColor3 = state and Library.ThemeColor or Theme.Panel,
+            TextColor3 = state and ContrastText(Library.ThemeColor) or Theme.Text,
+        })
+    end
+    function obj:Destroy()
+        for _, c in ipairs(conns) do
+            c:Disconnect()
+        end
+        for i, o in ipairs(Library.MobileKeyButtons) do
+            if o == obj then
+                table.remove(Library.MobileKeyButtons, i)
+                break
+            end
+        end
+        btn:Destroy()
+    end
+
+    table.insert(Library.MobileKeyButtons, obj)
+    RefreshMobileKeyLook(obj)
+    return obj
+end
+
+-- Tastatur-Layout zum Auswaehlen einer Taste (Mobile)
+function Library.OpenKeyPicker(title, onPick, currentName)
+    local old = parent:FindFirstChild("PyroXGUI_KeyPicker")
+    if old then
+        old:Destroy()
+    end
+
+    local gui = Create("ScreenGui", {
+        Name = "PyroXGUI_KeyPicker",
+        ResetOnSpawn = false,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        DisplayOrder = 40,
+        IgnoreGuiInset = true,
+        Parent = parent,
+    })
+    local function close()
+        if gui.Parent then
+            gui:Destroy()
+        end
+    end
+
+    local back = Create("TextButton", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundColor3 = Color3.new(0, 0, 0),
+        BackgroundTransparency = 0.45,
+        AutoButtonColor = false,
+        Text = "",
+        ZIndex = 1,
+        Parent = gui,
+    })
+    back.MouseButton1Click:Connect(close)
+
+    local PW, PH = 540, 372
+    local panel = Create("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Size = UDim2.new(0, PW, 0, PH),
+        Position = UDim2.new(0.5, 0, 0.5, 0),
+        BackgroundColor3 = Theme.Background,
+        BackgroundTransparency = 0.04,
+        BorderSizePixel = 0,
+        Active = true,
+        ZIndex = 2,
+        Parent = gui,
+    })
+    Corner(panel, 12)
+    Stroke(panel, Library.ThemeColor, 1.5, 0.2)
+    local sc = Create("UIScale", {Parent = panel})
+    local function fit()
+        local vp = gui.AbsoluteSize
+        if vp.X <= 0 or vp.Y <= 0 then
+            vp = Vector2.new(1280, 720)
+        end
+        sc.Scale = math.clamp(math.min((vp.X - 16) / PW, (vp.Y - 16) / PH), 0.35, 1)
+    end
+    fit()
+    gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(fit)
+
+    Create("TextLabel", {
+        Size = UDim2.new(1, -170, 0, 26),
+        Position = UDim2.new(0, 14, 0, 10),
+        BackgroundTransparency = 1,
+        Font = Library.FontBold,
+        Text = "Pick a key:  " .. tostring(title),
+        TextColor3 = Theme.Text,
+        TextSize = 15,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        ZIndex = 3,
+        Parent = panel,
+    })
+
+    local function smallBtn(text, w, xFromRight, color)
+        local b = Create("TextButton", {
+            AnchorPoint = Vector2.new(1, 0),
+            Size = UDim2.new(0, w, 0, 26),
+            Position = UDim2.new(1, xFromRight, 0, 10),
+            BackgroundColor3 = color or Theme.ElementAlt,
+            AutoButtonColor = false,
+            Font = Library.FontBold,
+            Text = text,
+            TextColor3 = Theme.Text,
+            TextSize = 12,
+            ZIndex = 3,
+            Parent = panel,
+        })
+        Corner(b, 6)
+        Stroke(b, Theme.Stroke, 1, 0.3)
+        return b
+    end
+    local closeBtn = smallBtn("X", 30, -12)
+    closeBtn.MouseButton1Click:Connect(close)
+    local clearBtn = smallBtn("No Key", 80, -50, Color3.fromRGB(90, 30, 38))
+    clearBtn.MouseButton1Click:Connect(function()
+        close()
+        if onPick then onPick(Enum.KeyCode.None) end
+    end)
+
+    local function K(label, code, w)
+        return {label = label, code = code or label, w = w or 44}
+    end
+    local rows = {
+        {K("F1", "F1", 38), K("F2", "F2", 38), K("F3", "F3", 38), K("F4", "F4", 38), K("F5", "F5", 38), K("F6", "F6", 38),
+         K("F7", "F7", 38), K("F8", "F8", 38), K("F9", "F9", 38), K("F10", "F10", 38), K("F11", "F11", 38), K("F12", "F12", 38)},
+        {K("1", "One"), K("2", "Two"), K("3", "Three"), K("4", "Four"), K("5", "Five"),
+         K("6", "Six"), K("7", "Seven"), K("8", "Eight"), K("9", "Nine"), K("0", "Zero")},
+        {K("Q"), K("W"), K("E"), K("R"), K("T"), K("Y"), K("U"), K("I"), K("O"), K("P")},
+        {K("A"), K("S"), K("D"), K("F"), K("G"), K("H"), K("J"), K("K"), K("L")},
+        {K("Z"), K("X"), K("C"), K("V"), K("B"), K("N"), K("M"), {spacer = 22},
+         K("Up", "Up", 40), K("Dn", "Down", 40), K("Lt", "Left", 40), K("Rt", "Right", 40)},
+        {K("Shift", "LeftShift", 74), K("Ctrl", "LeftControl", 74), K("Alt", "LeftAlt", 60),
+         K("Space", "Space", 150), K("Tab", "Tab", 56)},
+    }
+
+    local GAP, ROWH = 4, 40
+    for r, row in ipairs(rows) do
+        local total = 0
+        for i, it in ipairs(row) do
+            total = total + (it.spacer or it.w) + (i > 1 and GAP or 0)
+        end
+        local x = (PW - total) / 2
+        local y = 50 + (r - 1) * (ROWH + 6)
+        for _, it in ipairs(row) do
+            if it.spacer then
+                x = x + it.spacer + GAP
+            else
+                local active = (currentName ~= nil and currentName == it.code)
+                local kb = Create("TextButton", {
+                    Size = UDim2.new(0, it.w, 0, ROWH),
+                    Position = UDim2.new(0, x, 0, y),
+                    BackgroundColor3 = active and Library.ThemeColor or Theme.ElementAlt,
+                    AutoButtonColor = false,
+                    Font = Library.FontBold,
+                    Text = it.label,
+                    TextColor3 = active and ContrastText(Library.ThemeColor) or Theme.Text,
+                    TextSize = 13,
+                    ZIndex = 3,
+                    Parent = panel,
+                })
+                Corner(kb, 6)
+                Stroke(kb, Theme.Stroke, 1, 0.3)
+                local code = it.code
+                kb.MouseButton1Click:Connect(function()
+                    local kc = Enum.KeyCode[code]
+                    close()
+                    if kc and onPick then
+                        onPick(kc)
+                    end
+                end)
+                x = x + it.w + GAP
+            end
+        end
+    end
+
+    return close
+end
+
+-- Verbindet Key-Flag + Screen-Button (nur Mobile). getKey liefert den aktuellen Key,
+-- trigger wird beim Antippen des Buttons ausgefuehrt.
+local function AttachScreenKey(posFlag, getKey, trigger)
+    local ctl = {}
+    local sk
+    function ctl.Update()
+        if not Library.IsMobile then return end
+        local k = getKey()
+        if typeof(k) == "EnumItem" and k ~= Enum.KeyCode.None then
+            if not sk then
+                sk = Library.CreateMobileKey(posFlag, trigger)
+            end
+            sk:SetKey(k.Name)
+            local p = Library.Flags[posFlag]
+            if type(p) == "table" then
+                sk:SetPos(p.X, p.Y)
+            end
+        elseif sk then
+            sk:Destroy()
+            sk = nil
+        end
+    end
+    function ctl.SetActive(state)
+        if sk then sk:SetActive(state) end
+    end
+    return ctl
+end
+
 -- Liste aller vorhandenen Configs im aktuellen Config-Ordner
 function Library.ListConfigs()
     local result = {}
@@ -623,7 +1007,17 @@ function Library.New(titleText, customThemeColor)
 
     Library.IsMobile = DetectMobile()
     local IsMobile = Library.IsMobile
+    local IsPC = not IsMobile
+    Library.IsPC = IsPC
     local MAIN_BG = 0.1
+
+    -- PC bekommt ein groesseres Fenster (alle Sub-Tabs als Karten), Mobile bleibt wie bisher
+    local WIN_W = IsPC and 1040 or 750
+    local WIN_H = IsPC and 640 or 480
+    local SIDEBAR_W = IsPC and 170 or 140
+
+    -- Falls ein altes GUI beim Neu-Ausfuehren offen war: Maus-Freigabe sauber beenden
+    pcall(function() RunService:UnbindFromRenderStep("PyroXMouseFree") end)
 
     local Window = {}
 
@@ -634,14 +1028,26 @@ function Library.New(titleText, customThemeColor)
         Parent = parent,
     })
 
+    -- Unsichtbarer Modal-Button: gibt die Maus frei (Shift-Lock / First Person) solange das Menue offen ist
+    local ModalBtn
+    if IsPC then
+        ModalBtn = Create("TextButton", {
+            Name = "MouseUnlock",
+            Size = UDim2.new(0, 0, 0, 0),
+            BackgroundTransparency = 1,
+            Text = "",
+            Parent = ScreenGui,
+        })
+    end
+
     -- Skalierung (Mobile / kleine Bildschirme)
     local function ComputeScale()
         local cam = workspace.CurrentCamera
         local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
         if IsMobile then
-            return math.clamp(math.min((vp.X - 24) / 750, (vp.Y - 80) / 480), 0.35, 1)
+            return math.clamp(math.min((vp.X - 24) / WIN_W, (vp.Y - 80) / WIN_H), 0.35, 1)
         end
-        return math.clamp(math.min((vp.X - 40) / 750, (vp.Y - 40) / 480), 0.5, 1)
+        return math.clamp(math.min((vp.X - 40) / WIN_W, (vp.Y - 40) / WIN_H), 0.45, 1)
     end
 
     local Scales = {}
@@ -655,7 +1061,7 @@ function Library.New(titleText, customThemeColor)
     local MainFrame = Create("Frame", {
         Name = "MainFrame",
         AnchorPoint = Vector2.new(0.5, 0.5),
-        Size = UDim2.new(0, 750, 0, 480),
+        Size = UDim2.new(0, WIN_W, 0, WIN_H),
         Position = UDim2.new(0.5, 0, 0.5, 0),
         BackgroundColor3 = Theme.Background,
         BackgroundTransparency = MAIN_BG,
@@ -769,7 +1175,7 @@ function Library.New(titleText, customThemeColor)
     -- Rechtes Filter-Panel
     local FilterPanel = Create("Frame", {
         Name = "FilterPanel",
-        Size = UDim2.new(0, 210, 0, 480),
+        Size = UDim2.new(0, 210, 0, WIN_H),
         BackgroundColor3 = Theme.Panel,
         BackgroundTransparency = 0.1,
         BorderSizePixel = 0,
@@ -878,7 +1284,7 @@ function Library.New(titleText, customThemeColor)
         AnchorPoint = Vector2.new(1, 0.5),
         Size = UDim2.new(0, 0, 0, 20),
         AutomaticSize = Enum.AutomaticSize.X,
-        Position = UDim2.new(1, IsMobile and -50 or -12, 0.5, 0),
+        Position = UDim2.new(1, -50, 0.5, 0),
         BackgroundColor3 = Library.ThemeColor,
         BackgroundTransparency = 0.78,
         Font = Library.FontBold,
@@ -891,8 +1297,9 @@ function Library.New(titleText, customThemeColor)
     Corner(VersionLabel, 10)
     Create("UIPadding", {PaddingLeft = UDim.new(0, 9), PaddingRight = UDim.new(0, 9), Parent = VersionLabel})
 
+
     local MobileCloseBtn
-    if IsMobile then
+    do
         MobileCloseBtn = Create("TextButton", {
             Name = "Minimize",
             AnchorPoint = Vector2.new(1, 0.5),
@@ -958,7 +1365,7 @@ function Library.New(titleText, customThemeColor)
     -- Sidebar
     local Sidebar = Create("Frame", {
         Name = "Sidebar",
-        Size = UDim2.new(0, 140, 1, -58),
+        Size = UDim2.new(0, SIDEBAR_W, 1, -58),
         Position = UDim2.new(0, 8, 0, 50),
         BackgroundColor3 = Theme.Panel,
         BackgroundTransparency = 0.35,
@@ -971,7 +1378,7 @@ function Library.New(titleText, customThemeColor)
 
     local SideTabScroll = Create("ScrollingFrame", {
         Name = "SideTabScroll",
-        Size = UDim2.new(1, -12, 1, -52),
+        Size = UDim2.new(1, -12, 1, IsPC and -92 or -52),
         Position = UDim2.new(0, 6, 0, 6),
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
@@ -994,8 +1401,8 @@ function Library.New(titleText, customThemeColor)
 
     local ContentContainer = Create("Frame", {
         Name = "ContentContainer",
-        Size = UDim2.new(1, -164, 1, -58),
-        Position = UDim2.new(0, 156, 0, 50),
+        Size = UDim2.new(1, -(SIDEBAR_W + 24), 1, -58),
+        Position = UDim2.new(0, SIDEBAR_W + 16, 0, 50),
         BackgroundTransparency = 1,
         ZIndex = 3,
         Parent = MainFrame,
@@ -1235,7 +1642,7 @@ function Library.New(titleText, customThemeColor)
         Library.Flags[menuKeyFlag] = Enum.KeyCode.RightShift
     end
 
-    SettLabel("MENU TOGGLE KEY", 230)
+    local MenuKeyLabel = SettLabel("MENU TOGGLE KEY", 230)
 
     local currentMenuKey = Library.Flags[menuKeyFlag]
     local MenuKeyButton = Create("TextButton", {
@@ -1253,6 +1660,37 @@ function Library.New(titleText, customThemeColor)
     Corner(MenuKeyButton, 6)
     Stroke(MenuKeyButton, Theme.Stroke, 1, 0.2)
     AddHover(MenuKeyButton, Theme.ElementAlt, Theme.Hover)
+
+    -- Mobile hat den runden Button oben, die Menue-Taste gibt es dort nicht
+    if IsMobile then
+        MenuKeyButton.Visible = false
+        MenuKeyLabel.Visible = false
+    end
+
+    -- PC: kleiner Hinweis unten in der Sidebar
+    local KeyHint
+    if IsPC then
+        KeyHint = Create("TextLabel", {
+            Name = "KeyHint",
+            Size = UDim2.new(1, -12, 0, 32),
+            Position = UDim2.new(0, 6, 1, -78),
+            BackgroundTransparency = 1,
+            Font = Library.Font,
+            Text = "",
+            TextColor3 = Theme.SubText,
+            TextSize = 10,
+            TextWrapped = true,
+            ZIndex = 3,
+            Parent = Sidebar,
+        })
+    end
+    local function UpdateKeyHint()
+        if not KeyHint then return end
+        local k = Library.Flags[menuKeyFlag]
+        local n = (typeof(k) == "EnumItem" and k ~= Enum.KeyCode.None) and k.Name or "RightShift"
+        KeyHint.Text = "[" .. n .. "] show / hide"
+    end
+    UpdateKeyHint()
 
     local PathInfo = Create("TextLabel", {
         Size = UDim2.new(1, -28, 0, 16),
@@ -1560,8 +1998,45 @@ function Library.New(titleText, customThemeColor)
 
     local menuOpen = false
     local isLoaded = false
+
+    -- Maus freigeben solange das Menue offen ist (Shift-Lock, First Person, Mouse-Lock Games)
+    local prevMouseBehavior, prevMouseIcon
+    local function SetMouseFree(on)
+        if not IsPC or not Library.AutoUnlockMouse then return end
+        pcall(function() RunService:UnbindFromRenderStep("PyroXMouseFree") end)
+        if on then
+            if prevMouseBehavior == nil then
+                prevMouseBehavior = UserInputService.MouseBehavior
+                prevMouseIcon = UserInputService.MouseIconEnabled
+            end
+            pcall(function() ModalBtn.Modal = true end)
+            RunService:BindToRenderStep("PyroXMouseFree", Enum.RenderPriority.Last.Value + 5, function()
+                if not ScreenGui.Parent or not menuOpen then
+                    return
+                end
+                -- Rechtsklick gehalten = Kamera drehen (Standard-Kamera / Spiel darf die Maus selbst sperren)
+                if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+                    return
+                end
+                UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+                UserInputService.MouseIconEnabled = true
+            end)
+        else
+            pcall(function() ModalBtn.Modal = false end)
+            if prevMouseBehavior ~= nil then
+                pcall(function()
+                    UserInputService.MouseBehavior = prevMouseBehavior
+                    UserInputService.MouseIconEnabled = prevMouseIcon
+                end)
+                prevMouseBehavior = nil
+                prevMouseIcon = nil
+            end
+        end
+    end
     local function ToggleMainMenu(isOpen)
         menuOpen = isOpen
+        SetMouseFree(isOpen)
+        Library.SetMobileKeyEditing(isOpen)
         local tweenInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
         if MobileStroke then
             Tween(MobileStroke, 0.25, {Color = isOpen and Library.ThemeColor or Theme.Stroke})
@@ -1569,9 +2044,9 @@ function Library.New(titleText, customThemeColor)
         end
         if menuOpen then
             ScreenGui.Enabled = true
-            MainFrame.Size = UDim2.new(0, 700, 0, 440)
+            MainFrame.Size = UDim2.new(0, WIN_W - 50, 0, WIN_H - 40)
             MainFrame.BackgroundTransparency = 1
-            TweenService:Create(MainFrame, tweenInfo, {Size = UDim2.new(0, 750, 0, 480), BackgroundTransparency = MAIN_BG}):Play()
+            TweenService:Create(MainFrame, tweenInfo, {Size = UDim2.new(0, WIN_W, 0, WIN_H), BackgroundTransparency = MAIN_BG}):Play()
             if Mascot then
                 Mascot.ImageTransparency = 1
                 TweenService:Create(Mascot, tweenInfo, {ImageTransparency = Library.BackgroundImageTransparency}):Play()
@@ -1581,7 +2056,7 @@ function Library.New(titleText, customThemeColor)
             end
         else
             CloseAllPopups()
-            local tw1 = TweenService:Create(MainFrame, tweenInfo, {Size = UDim2.new(0, 700, 0, 440), BackgroundTransparency = 1})
+            local tw1 = TweenService:Create(MainFrame, tweenInfo, {Size = UDim2.new(0, WIN_W - 50, 0, WIN_H - 40), BackgroundTransparency = 1})
             local tw2 = TweenService:Create(DimOverlay, tweenInfo, {BackgroundTransparency = 1})
             tw1:Play()
             tw2:Play()
@@ -1591,7 +2066,7 @@ function Library.New(titleText, customThemeColor)
             tw1.Completed:Connect(function()
                 if not menuOpen then
                     ScreenGui.Enabled = false
-                    MainFrame.Size = UDim2.new(0, 750, 0, 480)
+                    MainFrame.Size = UDim2.new(0, WIN_W, 0, WIN_H)
                     MainFrame.BackgroundTransparency = MAIN_BG
                     if Mascot then
                         Mascot.ImageTransparency = Library.BackgroundImageTransparency
@@ -1650,6 +2125,35 @@ function Library.New(titleText, customThemeColor)
         end)
     end
 
+    -- Menue-Taste per ContextActionService (hohe Prioritaet + Sink): das Spiel bekommt die Taste
+    -- nicht mehr, d.h. Shift-Lock wird NICHT mehr umgeschaltet wenn RightShift das Menue oeffnet.
+    local casBound = false
+    local function BindMenuAction()
+        pcall(function() ContextActionService:UnbindAction("PyroXMenuKey") end)
+        casBound = false
+        if IsMobile then return end
+        local k =Library.Flags[menuKeyFlag]
+        if typeof(k) == "string" then
+            k = Enum.KeyCode[k]
+        end
+        if typeof(k) ~= "EnumItem" or k == Enum.KeyCode.None or k.EnumType ~= Enum.KeyCode then
+            return
+        end
+        local ok = pcall(function()
+            ContextActionService:BindActionAtPriority("PyroXMenuKey", function(_, state)
+                if bindingMenuKey then
+                    return Enum.ContextActionResult.Pass
+                end
+                if state == Enum.UserInputState.Begin then
+                    ToggleMainMenu(not menuOpen)
+                end
+                return Enum.ContextActionResult.Sink
+            end, false, Enum.ContextActionPriority.High.Value + 2000, k)
+        end)
+        casBound = ok
+    end
+    pcall(function() ContextActionService:UnbindAction("PyroXMenuKey") end)
+
     UserInputService.InputBegan:Connect(function(input, gameProcessed)
         if bindingMenuKey then
             local validKey = false
@@ -1670,8 +2174,10 @@ function Library.New(titleText, customThemeColor)
                 Library.Flags[menuKeyFlag] = keyValue
                 MenuKeyButton.Text = keyName
                 bindingMenuKey = false
+                UpdateKeyHint()
+                BindMenuAction()
             end
-        elseif not gameProcessed then
+        elseif not casBound and ShouldHandleKey(input, gameProcessed) then
             local targetKey = Library.Flags[menuKeyFlag]
             if typeof(targetKey) == "string" then
                 pcall(function()
@@ -1696,8 +2202,11 @@ function Library.New(titleText, customThemeColor)
             end
             local currentKey = Library.Flags[menuKeyFlag]
             MenuKeyButton.Text = (typeof(currentKey) == "EnumItem" and currentKey ~= Enum.KeyCode.None) and currentKey.Name or "RightShift"
+            UpdateKeyHint()
+            BindMenuAction()
         end
     end)
+    BindMenuAction()
 
     local sideTabs = {}
     local firstSideTab = true
@@ -1707,9 +2216,11 @@ function Library.New(titleText, customThemeColor)
         for _, t in pairs(sideTabs) do
             SetTabVisual(t.Button, false)
             t.HeaderBar.Visible = false
-            for _, sub in pairs(t.SubTabs) do
-                SetTabVisual(sub.Button, false)
-                sub.Container.Visible = false
+            if not IsPC then
+                for _, sub in pairs(t.SubTabs) do
+                    SetTabVisual(sub.Button, false)
+                    sub.Container.Visible = false
+                end
             end
         end
         SettingsPanel.Visible = not SettingsPanel.Visible
@@ -1755,12 +2266,12 @@ function Library.New(titleText, customThemeColor)
         if not filterOpen then return end
         filterOpen = false
         local tweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-        local tw = TweenService:Create(FilterPanel, tweenInfo, {BackgroundTransparency = 1, Size = UDim2.new(0, 190, 0, 460)})
+        local tw = TweenService:Create(FilterPanel, tweenInfo, {BackgroundTransparency = 1, Size = UDim2.new(0, 190, 0, WIN_H - 20)})
         tw:Play()
         tw.Completed:Wait()
         FilterPanel.Visible = false
         FilterPanel.BackgroundTransparency = 0.1
-        FilterPanel.Size = UDim2.new(0, 210, 0, 480)
+        FilterPanel.Size = UDim2.new(0, 210, 0, WIN_H)
     end
     table.insert(openPopups, CloseFilter)
 
@@ -1771,9 +2282,9 @@ function Library.New(titleText, customThemeColor)
             filterOpen = true
             FilterPanel.Visible = true
             FilterPanel.BackgroundTransparency = 1
-            FilterPanel.Size = UDim2.new(0, 190, 0, 460)
+            FilterPanel.Size = UDim2.new(0, 190, 0, WIN_H - 20)
             local tweenInfo = TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
-            TweenService:Create(FilterPanel, tweenInfo, {BackgroundTransparency = 0.1, Size = UDim2.new(0, 210, 0, 480)}):Play()
+            TweenService:Create(FilterPanel, tweenInfo, {BackgroundTransparency = 0.1, Size = UDim2.new(0, 210, 0, WIN_H)}):Play()
         else
             CloseFilter()
         end
@@ -1794,7 +2305,7 @@ function Library.New(titleText, customThemeColor)
         local isThisFirstTab = firstSideTab
 
         local SideButton = Create("TextButton", {
-            Size = UDim2.new(1, -2, 0, 32),
+            Size = UDim2.new(1, -2, 0, IsPC and 36 or 32),
             BackgroundColor3 = Theme.Element,
             BackgroundTransparency = 0.35,
             AutoButtonColor = false,
@@ -1820,30 +2331,113 @@ function Library.New(titleText, customThemeColor)
         })
         Corner(ind, 2)
 
-        local SubTabHeaderBar = Create("ScrollingFrame", {
-            Name = tabName .. "_SubBar",
-            Size = UDim2.new(1, 0, 0, 30),
-            Position = UDim2.new(0, 0, 0, 0),
-            BackgroundTransparency = 1,
-            BorderSizePixel = 0,
-            CanvasSize = UDim2.new(0, 0, 0, 0),
-            ScrollBarThickness = 0,
-            ScrollingDirection = Enum.ScrollingDirection.X,
-            Visible = false,
-            ZIndex = 3,
-            Parent = ContentContainer,
-        })
-        Create("UIPadding", {PaddingTop = UDim.new(0, 1), PaddingLeft = UDim.new(0, 1), Parent = SubTabHeaderBar})
+        local SubTabHeaderBar
+        local PCColLeft, PCColRight
+        local PCSubCount = 0
+        if IsPC then
+            -- PC: eine Seite pro Tab, alle Sub-Tabs als Karten in 2 Spalten
+            SubTabHeaderBar = Create("Frame", {
+                Name = tabName .. "_Page",
+                Size = UDim2.new(1, 0, 1, 0),
+                BackgroundTransparency = 1,
+                Visible = false,
+                ZIndex = 3,
+                Parent = ContentContainer,
+            })
+            Create("TextLabel", {
+                Name = "PageTitle",
+                Size = UDim2.new(1, -4, 0, 28),
+                Position = UDim2.new(0, 4, 0, 0),
+                BackgroundTransparency = 1,
+                Font = Library.FontBold,
+                Text = tabName,
+                TextColor3 = Theme.Text,
+                TextSize = 18,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                ZIndex = 3,
+                Parent = SubTabHeaderBar,
+            })
+            local pageLine = Create("Frame", {
+                Size = UDim2.new(1, 0, 0, 1),
+                Position = UDim2.new(0, 0, 0, 31),
+                BackgroundColor3 = Library.ThemeColor,
+                BorderSizePixel = 0,
+                ZIndex = 3,
+                Parent = SubTabHeaderBar,
+            })
+            Create("UIGradient", {
+                Transparency = NumberSequence.new({
+                    NumberSequenceKeypoint.new(0, 0),
+                    NumberSequenceKeypoint.new(0.6, 0.5),
+                    NumberSequenceKeypoint.new(1, 1),
+                }),
+                Parent = pageLine,
+            })
+            local PageScroll = Create("ScrollingFrame", {
+                Name = "PageScroll",
+                Size = UDim2.new(1, 0, 1, -40),
+                Position = UDim2.new(0, 0, 0, 40),
+                BackgroundTransparency = 1,
+                BorderSizePixel = 0,
+                CanvasSize = UDim2.new(0, 0, 0, 0),
+                AutomaticCanvasSize = Enum.AutomaticSize.Y,
+                ScrollBarThickness = 3,
+                ScrollBarImageColor3 = Library.ThemeColor,
+                ZIndex = 3,
+                Parent = SubTabHeaderBar,
+            })
+            PCColLeft = Create("Frame", {
+                Name = "ColLeft",
+                Size = UDim2.new(0.5, -7, 0, 0),
+                Position = UDim2.new(0, 0, 0, 0),
+                AutomaticSize = Enum.AutomaticSize.Y,
+                BackgroundTransparency = 1,
+                ZIndex = 3,
+                Parent = PageScroll,
+            })
+            PCColRight = Create("Frame", {
+                Name = "ColRight",
+                Size = UDim2.new(0.5, -9, 0, 0),
+                Position = UDim2.new(0.5, 3, 0, 0),
+                AutomaticSize = Enum.AutomaticSize.Y,
+                BackgroundTransparency = 1,
+                ZIndex = 3,
+                Parent = PageScroll,
+            })
+            for _, col in ipairs({PCColLeft, PCColRight}) do
+                Create("UIListLayout", {
+                    SortOrder = Enum.SortOrder.LayoutOrder,
+                    Padding = UDim.new(0, 8),
+                    Parent = col,
+                })
+                Create("UIPadding", {PaddingBottom = UDim.new(0, 10), Parent = col})
+            end
+        else
+            SubTabHeaderBar = Create("ScrollingFrame", {
+                Name = tabName .. "_SubBar",
+                Size = UDim2.new(1, 0, 0, 30),
+                Position = UDim2.new(0, 0, 0, 0),
+                BackgroundTransparency = 1,
+                BorderSizePixel = 0,
+                CanvasSize = UDim2.new(0, 0, 0, 0),
+                ScrollBarThickness = 0,
+                ScrollingDirection = Enum.ScrollingDirection.X,
+                Visible = false,
+                ZIndex = 3,
+                Parent = ContentContainer,
+            })
+            Create("UIPadding", {PaddingTop = UDim.new(0, 1), PaddingLeft = UDim.new(0, 1), Parent = SubTabHeaderBar})
 
-        local SubHeaderLayout = Create("UIListLayout", {
-            FillDirection = Enum.FillDirection.Horizontal,
-            SortOrder = Enum.SortOrder.LayoutOrder,
-            Padding = UDim.new(0, 6),
-            Parent = SubTabHeaderBar,
-        })
-        SubHeaderLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-            SubTabHeaderBar.CanvasSize = UDim2.new(0, SubHeaderLayout.AbsoluteContentSize.X + 10, 0, 0)
-        end)
+            local SubHeaderLayout = Create("UIListLayout", {
+                FillDirection = Enum.FillDirection.Horizontal,
+                SortOrder = Enum.SortOrder.LayoutOrder,
+                Padding = UDim.new(0, 6),
+                Parent = SubTabHeaderBar,
+            })
+            SubHeaderLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+                SubTabHeaderBar.CanvasSize = UDim2.new(0, SubHeaderLayout.AbsoluteContentSize.X + 10, 0, 0)
+            end)
+        end
 
         if firstSideTab then
             SetTabVisual(SideButton, true)
@@ -1857,15 +2451,21 @@ function Library.New(titleText, customThemeColor)
             for _, t in pairs(sideTabs) do
                 SetTabVisual(t.Button, false)
                 t.HeaderBar.Visible = false
-                for _, sub in pairs(t.SubTabs) do
-                    SetTabVisual(sub.Button, false)
-                    sub.Container.Visible = false
+                if not IsPC then
+                    for _, sub in pairs(t.SubTabs) do
+                        SetTabVisual(sub.Button, false)
+                        sub.Container.Visible = false
+                    end
                 end
             end
 
             SetTabVisual(SideButton, true)
             SubTabHeaderBar.Visible = true
-            if t_first_sub then
+            if IsPC then
+                SubTabHeaderBar.Position = UDim2.new(0, 0, 0, 12)
+                Tween(SubTabHeaderBar, 0.3, {Position = UDim2.new(0, 0, 0, 0)})
+            end
+            if t_first_sub and not IsPC then
                 SetTabVisual(t_first_sub.Button, true)
                 if t_first_sub.Container then
                     ShowContainer(t_first_sub.Container)
@@ -1880,57 +2480,154 @@ function Library.New(titleText, customThemeColor)
         function TabObj:AddSubTab(subTabName)
             local SubObj = {}
 
-            local textW = TextService:GetTextSize(subTabName, 12, Library.FontBold, Vector2.new(1000, 30)).X
-            local SubButton = Create("TextButton", {
-                Size = UDim2.new(0, math.max(84, textW + 28), 0, 27),
-                BackgroundColor3 = Theme.Element,
-                BackgroundTransparency = 0.35,
-                AutoButtonColor = false,
-                Font = Library.Font,
-                Text = subTabName,
-                TextColor3 = Theme.SubText,
-                TextSize = 12,
-                ZIndex = 3,
-                Parent = SubTabHeaderBar,
-            })
-            Corner(SubButton, 6)
-            Shine(SubButton)
+            local SubButton, ElementScroll, ElementLayout, CardFrame
+            if IsPC then
+                PCSubCount = PCSubCount + 1
+                local colParent = (PCSubCount % 2 == 1) and PCColLeft or PCColRight
+                CardFrame = Create("Frame", {
+                    Name = subTabName .. "_Card",
+                    Size = UDim2.new(1, 0, 0, 0),
+                    AutomaticSize = Enum.AutomaticSize.Y,
+                    BackgroundColor3 = Theme.Panel,
+                    BackgroundTransparency = 0.3,
+                    BorderSizePixel = 0,
+                    LayoutOrder = PCSubCount,
+                    ZIndex = 3,
+                    Parent = colParent,
+                })
+                Corner(CardFrame, 8)
+                Stroke(CardFrame, Theme.Stroke, 1, 0.4)
+                Create("UIListLayout", {
+                    SortOrder = Enum.SortOrder.LayoutOrder,
+                    Parent = CardFrame,
+                })
+                local cardHead = Create("Frame", {
+                    Name = "Head",
+                    LayoutOrder = 1,
+                    Size = UDim2.new(1, 0, 0, 34),
+                    BackgroundTransparency = 1,
+                    ZIndex = 3,
+                    Parent = CardFrame,
+                })
+                local cardBar = Create("Frame", {
+                    Size = UDim2.new(0, 3, 0, 14),
+                    Position = UDim2.new(0, 10, 0, 10),
+                    BackgroundColor3 = Library.ThemeColor,
+                    BorderSizePixel = 0,
+                    ZIndex = 4,
+                    Parent = cardHead,
+                })
+                Corner(cardBar, 2)
+                Create("TextLabel", {
+                    Size = UDim2.new(1, -30, 1, 0),
+                    Position = UDim2.new(0, 22, 0, 0),
+                    BackgroundTransparency = 1,
+                    Font = Library.FontBold,
+                    Text = subTabName,
+                    TextColor3 = Theme.Text,
+                    TextSize = 13,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    TextTruncate = Enum.TextTruncate.AtEnd,
+                    ZIndex = 4,
+                    Parent = cardHead,
+                })
+                local cardLine = Create("Frame", {
+                    Size = UDim2.new(1, -20, 0, 1),
+                    Position = UDim2.new(0, 10, 1, -1),
+                    BackgroundColor3 = Library.ThemeColor,
+                    BorderSizePixel = 0,
+                    ZIndex = 4,
+                    Parent = cardHead,
+                })
+                Create("UIGradient", {
+                    Transparency = NumberSequence.new({
+                        NumberSequenceKeypoint.new(0, 0.1),
+                        NumberSequenceKeypoint.new(1, 1),
+                    }),
+                    Parent = cardLine,
+                })
+                ElementScroll = Create("Frame", {
+                    Name = "Elements",
+                    LayoutOrder = 2,
+                    Size = UDim2.new(1, 0, 0, 0),
+                    AutomaticSize = Enum.AutomaticSize.Y,
+                    BackgroundTransparency = 1,
+                    ZIndex = 3,
+                    Parent = CardFrame,
+                })
+                Create("UIPadding", {
+                    PaddingTop = UDim.new(0, 8),
+                    PaddingBottom = UDim.new(0, 10),
+                    PaddingLeft = UDim.new(0, 8),
+                    Parent = ElementScroll,
+                })
+                Create("UIListLayout", {
+                    SortOrder = Enum.SortOrder.LayoutOrder,
+                    Padding = UDim.new(0, 6),
+                    Parent = ElementScroll,
+                })
+                -- Platzhalter damit der Rest der Library (Button / Visual) unveraendert funktioniert
+                SubButton = Create("TextButton", {
+                    Visible = false,
+                    Size = UDim2.new(0, 0, 0, 0),
+                    Text = "",
+                    Parent = CardFrame,
+                })
+            else
+                local textW = TextService:GetTextSize(subTabName, 12, Library.FontBold, Vector2.new(1000, 30)).X
+                SubButton = Create("TextButton", {
+                    Size = UDim2.new(0, math.max(84, textW + 28), 0, 27),
+                    BackgroundColor3 = Theme.Element,
+                    BackgroundTransparency = 0.35,
+                    AutoButtonColor = false,
+                    Font = Library.Font,
+                    Text = subTabName,
+                    TextColor3 = Theme.SubText,
+                    TextSize = 12,
+                    ZIndex = 3,
+                    Parent = SubTabHeaderBar,
+                })
+                Corner(SubButton, 6)
+                Shine(SubButton)
 
-            local ElementScroll = Create("ScrollingFrame", {
-                Size = UDim2.new(1, 0, 1, -36),
-                Position = UDim2.new(0, 0, 0, 36),
-                BackgroundTransparency = 1,
-                BorderSizePixel = 0,
-                CanvasSize = UDim2.new(0, 0, 0, 0),
-                ScrollBarThickness = 3,
-                ScrollBarImageColor3 = Library.ThemeColor,
-                Visible = false,
-                ZIndex = 3,
-                Parent = ContentContainer,
-            })
-            Create("UIPadding", {PaddingTop = UDim.new(0, 1), PaddingLeft = UDim.new(0, 1), Parent = ElementScroll})
+                ElementScroll = Create("ScrollingFrame", {
+                    Size = UDim2.new(1, 0, 1, -36),
+                    Position = UDim2.new(0, 0, 0, 36),
+                    BackgroundTransparency = 1,
+                    BorderSizePixel = 0,
+                    CanvasSize = UDim2.new(0, 0, 0, 0),
+                    ScrollBarThickness = 3,
+                    ScrollBarImageColor3 = Library.ThemeColor,
+                    Visible = false,
+                    ZIndex = 3,
+                    Parent = ContentContainer,
+                })
+                Create("UIPadding", {PaddingTop = UDim.new(0, 1), PaddingLeft = UDim.new(0, 1), Parent = ElementScroll})
 
-            local ElementLayout = Create("UIListLayout", {
-                SortOrder = Enum.SortOrder.LayoutOrder,
-                Padding = UDim.new(0, 6),
-                Parent = ElementScroll,
-            })
-            ElementLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-                ElementScroll.CanvasSize = UDim2.new(0, 0, 0, ElementLayout.AbsoluteContentSize.Y + 12)
-            end)
+                ElementLayout = Create("UIListLayout", {
+                    SortOrder = Enum.SortOrder.LayoutOrder,
+                    Padding = UDim.new(0, 6),
+                    Parent = ElementScroll,
+                })
+                ElementLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+                    ElementScroll.CanvasSize = UDim2.new(0, 0, 0, ElementLayout.AbsoluteContentSize.Y + 12)
+                end)
+            end
 
-            SubButton.MouseButton1Click:Connect(function()
-                CloseAllPopups()
-                for _, s in pairs(TabObj.SubTabs) do
-                    SetTabVisual(s.Button, false)
-                    s.Container.Visible = false
-                end
-                SetTabVisual(SubButton, true)
-                ShowContainer(ElementScroll)
-            end)
+            if not IsPC then
+                SubButton.MouseButton1Click:Connect(function()
+                    CloseAllPopups()
+                    for _, s in pairs(TabObj.SubTabs) do
+                        SetTabVisual(s.Button, false)
+                        s.Container.Visible = false
+                    end
+                    SetTabVisual(SubButton, true)
+                    ShowContainer(ElementScroll)
+                end)
+            end
 
             SubObj.Button = SubButton
-            SubObj.Container = ElementScroll
+            SubObj.Container = IsPC and CardFrame or ElementScroll
             table.insert(TabObj.SubTabs, SubObj)
 
             if not t_first_sub then
@@ -2133,17 +2830,36 @@ function Library.New(titleText, customThemeColor)
                 local KeyButton = MakeSmallButton(KeyFrame, (typeof(Library.Flags[flag]) == "EnumItem" and Library.Flags[flag] ~= Enum.KeyCode.None) and Library.Flags[flag].Name or "None", 76, -84, 12)
                 KeyButton.Font = Library.FontBold
 
+                local Screen = AttachScreenKey(flag .. "_ScreenPos", function()
+                    return Library.Flags[flag]
+                end, function()
+                    if callback then callback(Library.Flags[flag]) end
+                end)
+                local UpdateScreenKey = Screen.Update
+
                 local binding = false
                 KeyButton.MouseButton1Click:Connect(function()
+                    if IsMobile then
+                        local cur = Library.Flags[flag]
+                        Library.OpenKeyPicker(text, function(kc)
+                            Library.Flags[flag] = kc
+                            KeyButton.Text = (kc ~= Enum.KeyCode.None) and kc.Name or "None"
+                            UpdateScreenKey()
+                            if callback then callback(kc) end
+                        end, typeof(cur) == "EnumItem" and cur.Name or nil)
+                        return
+                    end
                     binding = true
                     KeyButton.Text = "..."
                 end)
+                UpdateScreenKey()
 
                 ResetButton.MouseButton1Click:Connect(function()
                     ClickFlash(ResetButton)
                     binding = false
                     Library.Flags[flag] = Enum.KeyCode.None
                     KeyButton.Text = "None"
+                    UpdateScreenKey()
                     if callback then callback(Enum.KeyCode.None) end
                 end)
 
@@ -2167,9 +2883,10 @@ function Library.New(titleText, customThemeColor)
                             Library.Flags[flag] = keyValue
                             KeyButton.Text = keyName
                             binding = false
+                            UpdateScreenKey()
                             if callback then callback(keyValue) end
                         end
-                    elseif not gameProcessed and Library.Flags[flag] ~= Enum.KeyCode.None then
+                    elseif ShouldHandleKey(input, gameProcessed) and Library.Flags[flag] ~= Enum.KeyCode.None then
                         if (input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == Library.Flags[flag]) or (input.UserInputType == Library.Flags[flag]) then
                             if callback then callback(Library.Flags[flag]) end
                         end
@@ -2190,6 +2907,7 @@ function Library.New(titleText, customThemeColor)
                         end
                         local currentKey = Library.Flags[flag]
                         KeyButton.Text = (typeof(currentKey) == "EnumItem" and currentKey ~= Enum.KeyCode.None) and currentKey.Name or "None"
+                        UpdateScreenKey()
                         if callback and typeof(currentKey) == "EnumItem" then callback(currentKey) end
                     end
                 end)
@@ -2770,9 +3488,18 @@ function Library.New(titleText, customThemeColor)
                 KeyBtn.Font = Library.FontBold
                 local Switch, Knob = CreateSwitch(Frame, -52, Library.Flags[flagToggle])
 
-                local function toggleAction()
+                local toggleAction
+                local Screen = AttachScreenKey(flagKey .. "_ScreenPos", function()
+                    return Library.Flags[flagKey]
+                end, function()
+                    toggleAction()
+                end)
+                local UpdateScreenKey = Screen.Update
+
+                toggleAction = function()
                     Library.Flags[flagToggle] = not Library.Flags[flagToggle]
                     SetSwitch(Switch, Knob, Library.Flags[flagToggle])
+                    Screen.SetActive(Library.Flags[flagToggle])
                     ShowPopup(text .. " is now " .. (Library.Flags[flagToggle] and "ON" or "OFF"))
                     if callback then callback(Library.Flags[flagToggle]) end
                 end
@@ -2781,15 +3508,28 @@ function Library.New(titleText, customThemeColor)
 
                 local binding = false
                 KeyBtn.MouseButton1Click:Connect(function()
+                    if IsMobile then
+                        local cur = Library.Flags[flagKey]
+                        Library.OpenKeyPicker(text, function(kc)
+                            Library.Flags[flagKey] = kc
+                            KeyBtn.Text = (kc ~= Enum.KeyCode.None) and kc.Name or "None"
+                            UpdateScreenKey()
+                            Screen.SetActive(Library.Flags[flagToggle])
+                        end, typeof(cur) == "EnumItem" and cur.Name or nil)
+                        return
+                    end
                     binding = true
                     KeyBtn.Text = "..."
                 end)
+                UpdateScreenKey()
+                Screen.SetActive(Library.Flags[flagToggle])
 
                 ResetBtn.MouseButton1Click:Connect(function()
                     ClickFlash(ResetBtn)
                     binding = false
                     Library.Flags[flagKey] = Enum.KeyCode.None
                     KeyBtn.Text = "None"
+                    UpdateScreenKey()
                 end)
 
                 UserInputService.InputBegan:Connect(function(input, gameProcessed)
@@ -2798,8 +3538,10 @@ function Library.New(titleText, customThemeColor)
                             Library.Flags[flagKey] = input.KeyCode
                             KeyBtn.Text = input.KeyCode.Name
                             binding = false
+                            UpdateScreenKey()
+                            Screen.SetActive(Library.Flags[flagToggle])
                         end
-                    elseif not gameProcessed and input.UserInputType == Enum.UserInputType.Keyboard and Library.Flags[flagKey] ~= Enum.KeyCode.None and input.KeyCode == Library.Flags[flagKey] then
+                    elseif input.UserInputType == Enum.UserInputType.Keyboard and ShouldHandleKey(input, gameProcessed) and Library.Flags[flagKey] ~= Enum.KeyCode.None and input.KeyCode == Library.Flags[flagKey] then
                         toggleAction()
                     end
                 end)
@@ -2823,6 +3565,8 @@ function Library.New(titleText, customThemeColor)
                     end
                     if kVal ~= nil and typeof(kVal) == "EnumItem" then
                         KeyBtn.Text = (kVal ~= Enum.KeyCode.None) and kVal.Name or "None"
+                        UpdateScreenKey()
+                        Screen.SetActive(Library.Flags[flagToggle])
                     end
                 end)
             end
@@ -2935,97 +3679,17 @@ function Library.New(titleText, customThemeColor)
     -- ==========================================
     -- LADEBILDSCHIRM
     -- ==========================================
-    -- Feste Logo-Farbe für den Ladebildschirm (unabhängig von der Theme-Farbe)
-    local LoadColor = Color3.fromRGB(168, 85, 247)
-    -- ==========================================
-    local LoadingFrame = Create("Frame", {
-        Name = "Loading",
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Size = UDim2.new(0, 400, 0, 150),
-        Position = UDim2.new(0.5, 0, 0.5, 0),
-        BackgroundColor3 = Theme.Background,
-        BackgroundTransparency = 0.05,
-        BorderSizePixel = 0,
-        ZIndex = 9999,
-        Parent = ScreenGui,
-    })
-    Corner(LoadingFrame, 12)
-    local LoadStroke = Stroke(LoadingFrame, Color3.new(1, 1, 1), 1.5, 0)
-    local LoadGrad = Create("UIGradient", {Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, LoadColor),
-        ColorSequenceKeypoint.new(0.5, Theme.Stroke),
-        ColorSequenceKeypoint.new(1, LoadColor),
-    }), Parent = LoadStroke})
-    AddScale(LoadingFrame)
-
-    local LoadMascot = Create("ImageLabel", {
-        Size = UDim2.new(0, 118, 0, 118),
-        Position = UDim2.new(0, 16, 0.5, -59),
-        BackgroundColor3 = Theme.Panel,
-        Image = LOGO,
-        ScaleType = Enum.ScaleType.Crop,
-        Parent = LoadingFrame,
-    })
-    Corner(LoadMascot, 10)
-    Stroke(LoadMascot, LoadColor, 1.5, 0.2)
-
-    Create("TextLabel", {
-        Size = UDim2.new(1, -166, 0, 24),
-        Position = UDim2.new(0, 150, 0, 30),
-        BackgroundTransparency = 1,
-        Font = Library.FontBold,
-        Text = titleText or "GUI Library",
-        TextColor3 = Theme.Text,
-        TextSize = 18,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        TextTruncate = Enum.TextTruncate.AtEnd,
-        Parent = LoadingFrame,
-    })
-
-    local SubTextLoad = Create("TextLabel", {
-        Size = UDim2.new(1, -166, 0, 18),
-        Position = UDim2.new(0, 150, 0, 56),
-        BackgroundTransparency = 1,
-        Font = Library.Font,
-        Text = "Loading Interface...",
-        TextColor3 = Theme.SubText,
-        TextSize = 13,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        Parent = LoadingFrame,
-    })
-
-    local BarBG = Create("Frame", {
-        Size = UDim2.new(1, -166, 0, 6),
-        Position = UDim2.new(0, 150, 0, 98),
-        BackgroundColor3 = Theme.Off,
-        BorderSizePixel = 0,
-        Parent = LoadingFrame,
-    })
-    Corner(BarBG, 3)
-
-    local BarFill = Create("Frame", {
-        Size = UDim2.new(0, 0, 1, 0),
-        BackgroundColor3 = LoadColor,
-        BorderSizePixel = 0,
-        Parent = BarBG,
-    })
-    Corner(BarFill, 3)
-    Shine(BarFill, 0)
-
-    local Percent = Create("TextLabel", {
-        Size = UDim2.new(1, -166, 0, 16),
-        Position = UDim2.new(0, 150, 0, 110),
-        BackgroundTransparency = 1,
-        Font = Library.FontBold,
-        Text = "0%",
-        TextColor3 = Lighten(LoadColor, 0.4),
-        TextSize = 11,
-        TextXAlignment = Enum.TextXAlignment.Right,
-        Parent = LoadingFrame,
-    })
-
-    -- Rotierender Rahmen-Verlauf
+    local LoadColor = Library.ThemeColor
     local rotConn
+    local StrokeGradLoad
+
+    local function OpenMenuNow()
+        MainFrame.Visible = true
+        isLoaded = true
+        ToggleMainMenu(true)
+    end
+
+    -- Dauerhafte Rotation des Rahmen-Verlaufs (Hauptfenster + Ladebildschirm)
     rotConn = RunService.RenderStepped:Connect(function(dt)
         if not ScreenGui.Parent then
             rotConn:Disconnect()
@@ -3033,31 +3697,377 @@ function Library.New(titleText, customThemeColor)
         end
         if ScreenGui.Enabled then
             StrokeGrad.Rotation = (StrokeGrad.Rotation + dt * 45) % 360
-            if LoadGrad.Parent then
-                LoadGrad.Rotation = StrokeGrad.Rotation
-            end
+        end
+        if StrokeGradLoad and StrokeGradLoad.Parent then
+            StrokeGradLoad.Rotation = (StrokeGradLoad.Rotation + dt * 90) % 360
         end
     end)
 
+    if Library.ShowLoadingScreen == false then
+        OpenMenuNow()
+        return Window
+    end
+
+    local LoadGui = Create("ScreenGui", {
+        Name = "PyroXGUI_Loading",
+        ResetOnSpawn = false,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        DisplayOrder = 100,
+        IgnoreGuiInset = true,
+        Parent = parent,
+    })
+
+    -- Bildschirm abdunkeln (+ leichter Blur)
+    local Backdrop = Create("Frame", {
+        Name = "Backdrop",
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Active = true,
+        ZIndex = 1,
+        Parent = LoadGui,
+    })
+    Create("UIGradient", {
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0),
+            NumberSequenceKeypoint.new(0.5, 0.12),
+            NumberSequenceKeypoint.new(1, 0),
+        }),
+        Rotation = 90,
+        Parent = Backdrop,
+    })
+    local BACKDROP_T = 0.12
+    Tween(Backdrop, 0.6, {BackgroundTransparency = BACKDROP_T})
+
+    local Blur
+    if Library.LoadingBlur ~= false then
+        pcall(function()
+            Blur = Instance.new("BlurEffect")
+            Blur.Name = "PyroXLoadingBlur"
+            Blur.Size = 0
+            Blur.Parent = game:GetService("Lighting")
+            TweenService:Create(Blur, TweenInfo.new(0.6), {Size = 16}):Play()
+        end)
+    end
+
+    -- Karte (CanvasGroup, damit alles gemeinsam einblendet)
+    local CARD_W, CARD_H = 540, 250
+    local Card = Create("CanvasGroup", {
+        Name = "Card",
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Size = UDim2.new(0, CARD_W, 0, CARD_H),
+        Position = UDim2.new(0.5, 0, 0.5, 0),
+        BackgroundColor3 = Theme.Background,
+        BackgroundTransparency = 0.04,
+        BorderSizePixel = 0,
+        GroupTransparency = 1,
+        ZIndex = 2,
+        Parent = LoadGui,
+    })
+    Corner(Card, 14)
+    local CardStroke = Stroke(Card, Color3.new(1, 1, 1), 1.5, 0)
+    StrokeGradLoad = Create("UIGradient", {Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, LoadColor),
+        ColorSequenceKeypoint.new(0.5, Theme.Stroke),
+        ColorSequenceKeypoint.new(1, LoadColor),
+    }), Parent = CardStroke})
+
+    local CardScale = Create("UIScale", {Parent = Card})
+    local function FitCard()
+        local vp = LoadGui.AbsoluteSize
+        if vp.X <= 0 or vp.Y <= 0 then
+            vp = Vector2.new(1280, 720)
+        end
+        CardScale.Scale = math.clamp(math.min((vp.X - 24) / CARD_W, (vp.Y - 24) / CARD_H), 0.45, 1.15)
+    end
+    FitCard()
+    LoadGui:GetPropertyChangedSignal("AbsoluteSize"):Connect(FitCard)
+
+    -- Hintergrund-Glow unten
+    local CardGlow = Create("Frame", {
+        Size = UDim2.new(1, 0, 0.6, 0),
+        Position = UDim2.new(0, 0, 0.4, 0),
+        BackgroundColor3 = LoadColor,
+        BorderSizePixel = 0,
+        ZIndex = 2,
+        Parent = Card,
+    })
+    Create("UIGradient", {
+        Rotation = 90,
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 1),
+            NumberSequenceKeypoint.new(1, 0.8),
+        }),
+        Parent = CardGlow,
+    })
+
+    -- Logo mit pulsierendem Ring
+    local LogoHolder = Create("Frame", {
+        Size = UDim2.new(0, 84, 0, 84),
+        Position = UDim2.new(0, 24, 0, 24),
+        BackgroundColor3 = Theme.Panel,
+        BorderSizePixel = 0,
+        ZIndex = 3,
+        Parent = Card,
+    })
+    Corner(LogoHolder, 18)
+    local LogoRing = Stroke(LogoHolder, LoadColor, 2, 0.2)
+    Create("ImageLabel", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Size = UDim2.new(0, 56, 0, 56),
+        Position = UDim2.new(0.5, 0, 0.5, 0),
+        BackgroundTransparency = 1,
+        Image = LOGO,
+        ZIndex = 4,
+        Parent = LogoHolder,
+    })
+    local pulseTween = TweenService:Create(LogoRing, TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {Transparency = 0.9, Thickness = 4})
+    pulseTween:Play()
+
+    Create("TextLabel", {
+        Size = UDim2.new(1, -150, 0, 28),
+        Position = UDim2.new(0, 126, 0, 24),
+        BackgroundTransparency = 1,
+        Font = Library.FontBold,
+        Text = titleText or "GUI Library",
+        TextColor3 = Theme.Text,
+        TextSize = 22,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        ZIndex = 4,
+        Parent = Card,
+    })
+
+    local StatusLabel = Create("TextLabel", {
+        Size = UDim2.new(1, -150, 0, 18),
+        Position = UDim2.new(0, 126, 0, 54),
+        BackgroundTransparency = 1,
+        Font = Library.Font,
+        Text = "Starting...",
+        TextColor3 = Lighten(LoadColor, 0.45),
+        TextSize = 13,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 4,
+        Parent = Card,
+    })
+
+    -- Info-Chips (Spiel, Modus, Version, Executor) - kein Spielername
+    local ChipRow = Create("Frame", {
+        Size = UDim2.new(1, -150, 0, 22),
+        Position = UDim2.new(0, 126, 0, 84),
+        BackgroundTransparency = 1,
+        ZIndex = 4,
+        Parent = Card,
+    })
+    Create("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 6),
+        Parent = ChipRow,
+    })
+    local function MakeChip(order, text, maxW)
+        local chip = Create("TextLabel", {
+            LayoutOrder = order,
+            Size = UDim2.new(0, 0, 1, 0),
+            AutomaticSize = Enum.AutomaticSize.X,
+            BackgroundColor3 = LoadColor,
+            BackgroundTransparency = 0.82,
+            Font = Library.FontBold,
+            Text = text,
+            TextColor3 = Lighten(LoadColor, 0.55),
+            TextSize = 11,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            ZIndex = 5,
+            Parent = ChipRow,
+        })
+        Corner(chip, 11)
+        Create("UIPadding", {PaddingLeft = UDim.new(0, 9), PaddingRight = UDim.new(0, 9), Parent = chip})
+        if maxW then
+            Create("UISizeConstraint", {MaxSize = Vector2.new(maxW, 22), Parent = chip})
+        end
+        return chip
+    end
+    local ChipMode = MakeChip(1, IsMobile and "MOBILE" or "PC")
+    local ChipVer = MakeChip(2, Library.Version)
+    local ChipGame = MakeChip(3, "Loading game...", 190)
+
     task.spawn(function()
-        local loadTween = TweenService:Create(BarFill, TweenInfo.new(2, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), {Size = UDim2.new(1, 0, 1, 0)})
-        loadTween:Play()
-        while loadTween.PlaybackState == Enum.PlaybackState.Playing or loadTween.PlaybackState == Enum.PlaybackState.Begin do
-            Percent.Text = tostring(math.floor(BarFill.Size.X.Scale * 100)) .. "%"
-            task.wait()
+        local name
+        pcall(function()
+            name = game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId).Name
+        end)
+        if not name or name == "" then
+            pcall(function() name = game.Name end)
+        end
+        if name and ChipGame.Parent then
+            ChipGame.Text = tostring(name)
+        end
+    end)
+
+    -- Tipp-Zeile
+    local TipLabel = Create("TextLabel", {
+        Size = UDim2.new(1, -48, 0, 34),
+        Position = UDim2.new(0, 24, 0, 128),
+        BackgroundTransparency = 1,
+        Font = Library.Font,
+        Text = "",
+        TextColor3 = Theme.SubText,
+        TextSize = 12,
+        TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Top,
+        ZIndex = 4,
+        Parent = Card,
+    })
+
+    -- Fortschrittsbalken
+    local BarBG = Create("Frame", {
+        Size = UDim2.new(1, -48, 0, 8),
+        Position = UDim2.new(0, 24, 0, 188),
+        BackgroundColor3 = Theme.Off,
+        BorderSizePixel = 0,
+        ZIndex = 4,
+        Parent = Card,
+    })
+    Corner(BarBG, 4)
+    local BarFill = Create("Frame", {
+        Size = UDim2.new(0, 0, 1, 0),
+        BackgroundColor3 = LoadColor,
+        BorderSizePixel = 0,
+        ZIndex = 5,
+        Parent = BarBG,
+    })
+    Corner(BarFill, 4)
+    Shine(BarFill, 0)
+
+    local InfoLabel = Create("TextLabel", {
+        Size = UDim2.new(1, -120, 0, 16),
+        Position = UDim2.new(0, 24, 0, 206),
+        BackgroundTransparency = 1,
+        Font = Library.Font,
+        Text = "PyroX GUI " .. Library.Version,
+        TextColor3 = Theme.SubText,
+        TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        ZIndex = 4,
+        Parent = Card,
+    })
+    local Percent = Create("TextLabel", {
+        AnchorPoint = Vector2.new(1, 0),
+        Size = UDim2.new(0, 80, 0, 16),
+        Position = UDim2.new(1, -24, 0, 206),
+        BackgroundTransparency = 1,
+        Font = Library.FontBold,
+        Text = "0%",
+        TextColor3 = Lighten(LoadColor, 0.45),
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        ZIndex = 4,
+        Parent = Card,
+    })
+    BarFill:GetPropertyChangedSignal("Size"):Connect(function()
+        Percent.Text = tostring(math.floor(BarFill.Size.X.Scale * 100)) .. "%"
+    end)
+
+    -- Ladesound
+    local LoadSound
+    if Library.LoadingSound ~= false then
+        task.spawn(function()
+            pcall(function()
+                local snd = Instance.new("Sound")
+                snd.Name = "PyroXLoadingSound"
+                snd.SoundId = Library.LoadingSoundId or "rbxassetid://107366908379453"
+                snd.Volume = Library.LoadingSoundVolume or 0.6
+                snd.Looped = false
+                snd.Parent = LoadGui
+                LoadSound = snd
+                if not snd.IsLoaded then
+                    local t0 = os.clock()
+                    repeat task.wait() until snd.IsLoaded or os.clock() - t0 > 1.5
+                end
+                snd:Play()
+            end)
+        end)
+    end
+
+    TweenService:Create(Card, TweenInfo.new(0.5, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {GroupTransparency = 0}):Play()
+
+    local function keyName()
+        local k = Library.Flags[menuKeyFlag]
+        return (typeof(k) == "EnumItem" and k ~= Enum.KeyCode.None) and k.Name or "RightShift"
+    end
+    local tips
+    if IsMobile then
+        tips = {
+            "Tap the round button at the top to open or close the menu.",
+            "Drag the round button to move it wherever you like.",
+            "Set a key in the menu to get a movable button on your screen.",
+            "Your settings can be saved and loaded in the Settings tab.",
+            "Almost there...",
+        }
+    else
+        tips = {
+            "Press [" .. keyName() .. "] to show or hide the menu.",
+            "Drag the top bar to move the window.",
+            "Hold right mouse button to move the camera while the menu is open.",
+            "Your settings can be saved and loaded in the Settings tab.",
+            "Almost there...",
+        }
+    end
+
+    local stages = {
+        {"Initializing...", 0.14, 0.55},
+        {"Loading modules...", 0.38, 0.8},
+        {"Building interface...", 0.66, 0.9},
+        {"Applying settings...", 0.88, 0.7},
+        {"Finalizing...", 1, 0.6},
+    }
+
+    task.spawn(function()
+        for i, st in ipairs(stages) do
+            StatusLabel.Text = st[1]
+            TipLabel.TextTransparency = 1
+            TipLabel.Text = tips[i] or ""
+            TweenService:Create(TipLabel, TweenInfo.new(0.3), {TextTransparency = 0}):Play()
+            if i == 5 then
+                local tabsN = #sideTabs
+                local featN = #Library.ElementUpdaters
+                InfoLabel.Text = tabsN .. " tabs  ·  " .. featN .. " features  ·  PyroX GUI " .. Library.Version
+                pcall(function()
+                    local exec = identifyexecutor()
+                    if exec then
+                        InfoLabel.Text = InfoLabel.Text .. "  ·  " .. tostring(exec)
+                    end
+                end)
+            end
+            Tween(BarFill, st[3], {Size = UDim2.new(st[2], 0, 1, 0)}, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut)
+            task.wait(st[3] + 0.05)
         end
         Percent.Text = "100%"
-        SubTextLoad.Text = "Finished!"
-        task.wait(0.5)
+        StatusLabel.Text = "Ready!"
+        task.wait(0.45)
 
-        -- Fade Out
-        FadeOut(LoadingFrame, 0.5)
-        task.wait(0.5)
-        LoadingFrame:Destroy()
-
-        MainFrame.Visible = true
-        isLoaded = true
-        ToggleMainMenu(true)
+        -- Ausblenden
+        if LoadSound then
+            pcall(function()
+                TweenService:Create(LoadSound, TweenInfo.new(0.5), {Volume = 0}):Play()
+            end)
+        end
+        pcall(function() pulseTween:Cancel() end)
+        TweenService:Create(Card, TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {GroupTransparency = 1}):Play()
+        TweenService:Create(Backdrop, TweenInfo.new(0.55), {BackgroundTransparency = 1}):Play()
+        if Blur then
+            pcall(function() TweenService:Create(Blur, TweenInfo.new(0.5), {Size = 0}):Play() end)
+        end
+        task.wait(0.4)
+        OpenMenuNow()
+        task.wait(0.2)
+        pcall(function() if Blur then Blur:Destroy() end end)
+        pcall(function() if LoadSound then LoadSound:Stop() end end)
+        LoadGui:Destroy()
+        StrokeGradLoad = nil
     end)
 
     return Window
