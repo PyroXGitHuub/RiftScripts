@@ -1,5 +1,5 @@
 --[[
-    PyroX GUI Library  ·  v3.3.0  (Loading Screen)
+    PyroX GUI Library  ·  v3.4.0  (Loading Screen)
     ------------------------------------------------------------
     API ist 1:1 kompatibel mit v2.x:
       Library.New / Window:AddTab / Tab:AddSubTab
@@ -35,6 +35,15 @@
         Taste entsteht ein Button auf dem Screen (zeigt den Key-Namen, frei verschiebbar solange
         das Menue offen ist, antippen = Taste druecken).
       - Library.IsPC / Library.IsMobile
+
+    NEU in v3.4.0 (PC-Layout, uebersichtlichere Sub-Tabs):
+      - Unter dem Seitentitel gibt es jetzt eine Sub-Tab-Leiste (Chips). Es wird standardmaessig nur
+        EIN Sub-Tab auf einmal angezeigt (volle Breite), statt alle Karten gleichzeitig.
+      - Der Chip "All" zeigt wie vorher alle Sub-Tabs als Karten in 2 Spalten.
+      - Die Auswahl bleibt pro Tab erhalten, solange das Menue offen bleibt.
+      - Library.PCSubTabMode = "tabs"   -- (Standard) Chip-Leiste, ein Sub-Tab auf einmal
+        Library.PCSubTabMode = "cards"  -- altes Verhalten (alle Karten, keine Leiste)
+        (VOR Library.New setzen; Mobile ist davon nicht betroffen)
 ]]
 
 local Players = game:GetService("Players")
@@ -64,7 +73,7 @@ for _, oldName in ipairs({"SketchGUILibrary", "SketchGUILibrary_Mobile", "PyroXG
 end
 
 local Library = {}
-Library.Version = "v3.3.0"
+Library.Version = "v3.4.0"
 Library.ThemeColor = Library.ThemeColor or Color3.fromRGB(150, 90, 255)
 Library.Flags = {}
 Library.SettingsFileName = "" -- bewusst leer: der Nutzer muss selbst einen Namen wählen
@@ -78,6 +87,7 @@ Library.BackgroundImageTransparency = 0.25
 Library.MobileMode = nil
 Library.IsMobile = false
 Library.IsPC = true
+Library.PCSubTabMode = Library.PCSubTabMode or "tabs" -- "tabs" = Chip-Leiste (ein Sub-Tab), "cards" = alle Karten
 Library.AutoUnlockMouse = true
 Library.ShowLoadingScreen = true
 Library.LoadingSound = true
@@ -2334,6 +2344,8 @@ function Library.New(titleText, customThemeColor)
         local SubTabHeaderBar
         local PCColLeft, PCColRight
         local PCSubCount = 0
+        local PCPageScroll, PCChipBar, PCAllChip
+        local PCSingle = false
         if IsPC then
             -- PC: eine Seite pro Tab, alle Sub-Tabs als Karten in 2 Spalten
             SubTabHeaderBar = Create("Frame", {
@@ -2386,6 +2398,7 @@ function Library.New(titleText, customThemeColor)
                 ZIndex = 3,
                 Parent = SubTabHeaderBar,
             })
+            PCPageScroll = PageScroll
             PCColLeft = Create("Frame", {
                 Name = "ColLeft",
                 Size = UDim2.new(0.5, -7, 0, 0),
@@ -2412,6 +2425,31 @@ function Library.New(titleText, customThemeColor)
                 })
                 Create("UIPadding", {PaddingBottom = UDim.new(0, 10), Parent = col})
             end
+
+            -- Sub-Tab-Leiste (Chips): erst sichtbar, wenn der Tab mindestens 2 Sub-Tabs hat
+            PCChipBar = Create("ScrollingFrame", {
+                Name = "SubTabChips",
+                Size = UDim2.new(1, 0, 0, 30),
+                Position = UDim2.new(0, 0, 0, 38),
+                BackgroundTransparency = 1,
+                BorderSizePixel = 0,
+                CanvasSize = UDim2.new(0, 0, 0, 0),
+                ScrollBarThickness = 0,
+                ScrollingDirection = Enum.ScrollingDirection.X,
+                Visible = false,
+                ZIndex = 3,
+                Parent = SubTabHeaderBar,
+            })
+            Create("UIPadding", {PaddingTop = UDim.new(0, 2), PaddingLeft = UDim.new(0, 2), Parent = PCChipBar})
+            local chipLayout = Create("UIListLayout", {
+                FillDirection = Enum.FillDirection.Horizontal,
+                SortOrder = Enum.SortOrder.LayoutOrder,
+                Padding = UDim.new(0, 6),
+                Parent = PCChipBar,
+            })
+            chipLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+                PCChipBar.CanvasSize = UDim2.new(0, chipLayout.AbsoluteContentSize.X + 10, 0, 0)
+            end)
         else
             SubTabHeaderBar = Create("ScrollingFrame", {
                 Name = tabName .. "_SubBar",
@@ -2476,6 +2514,43 @@ function Library.New(titleText, customThemeColor)
         TabObj.Button = SideButton
         TabObj.HeaderBar = SubTabHeaderBar
         TabObj.SubTabs = {}
+
+        -- PC: Sub-Tab auswaehlen (sel = SubObj) oder "All" (sel = nil) = alle Karten in 2 Spalten
+        local function PCSelect(sel)
+            if not IsPC or Library.PCSubTabMode == "cards" then return end
+            PCSingle = sel ~= nil
+            TabObj.PCSelected = sel
+            PCColLeft.Size = PCSingle and UDim2.new(1, -4, 0, 0) or UDim2.new(0.5, -7, 0, 0)
+            PCColRight.Visible = not PCSingle
+            for _, s in ipairs(TabObj.SubTabs) do
+                local card = s.Container
+                if PCSingle then
+                    if s == sel then
+                        card.Parent = PCColLeft
+                        card.Visible = true
+                    else
+                        card.Visible = false
+                    end
+                else
+                    card.Parent = s.PCCol
+                    card.Visible = true
+                end
+            end
+            if PCAllChip then SetTabVisual(PCAllChip, not PCSingle) end
+            for _, s in ipairs(TabObj.SubTabs) do
+                if s.Chip then SetTabVisual(s.Chip, s == sel) end
+            end
+            PCPageScroll.CanvasPosition = Vector2.new(0, 0)
+        end
+
+        -- PC: Leiste ein-/ausblenden und Seiteninhalt darunter verschieben
+        local function PCRelayout()
+            if not IsPC then return end
+            local useChips = Library.PCSubTabMode ~= "cards" and #TabObj.SubTabs >= 2
+            PCChipBar.Visible = useChips
+            PCPageScroll.Position = UDim2.new(0, 0, 0, useChips and 74 or 40)
+            PCPageScroll.Size = UDim2.new(1, 0, 1, useChips and -74 or -40)
+        end
 
         function TabObj:AddSubTab(subTabName)
             local SubObj = {}
@@ -2573,6 +2648,56 @@ function Library.New(titleText, customThemeColor)
                     Text = "",
                     Parent = CardFrame,
                 })
+                SubObj.PCCol = colParent
+                if Library.PCSubTabMode ~= "cards" then
+                    -- "All"-Chip wird mit dem ersten Sub-Tab angelegt
+                    if not PCAllChip then
+                        PCAllChip = Create("TextButton", {
+                            Name = "AllChip",
+                            Size = UDim2.new(0, 52, 0, 26),
+                            BackgroundColor3 = Theme.Element,
+                            BackgroundTransparency = 0.35,
+                            AutoButtonColor = false,
+                            Font = Library.Font,
+                            Text = "All",
+                            TextColor3 = Theme.SubText,
+                            TextSize = 12,
+                            LayoutOrder = 0,
+                            ZIndex = 4,
+                            Parent = PCChipBar,
+                        })
+                        Corner(PCAllChip, 6)
+                        Shine(PCAllChip)
+                        PCAllChip.MouseButton1Click:Connect(function()
+                            CloseAllPopups()
+                            PCSelect(nil)
+                        end)
+                    end
+                    local chipW = TextService:GetTextSize(subTabName, 12, Library.FontBold, Vector2.new(1000, 30)).X
+                    local chip = Create("TextButton", {
+                        Name = subTabName .. "_Chip",
+                        Size = UDim2.new(0, math.max(64, chipW + 26), 0, 26),
+                        BackgroundColor3 = Theme.Element,
+                        BackgroundTransparency = 0.35,
+                        AutoButtonColor = false,
+                        Font = Library.Font,
+                        Text = subTabName,
+                        TextColor3 = Theme.SubText,
+                        TextSize = 12,
+                        LayoutOrder = PCSubCount,
+                        ZIndex = 4,
+                        Parent = PCChipBar,
+                    })
+                    Corner(chip, 6)
+                    Shine(chip)
+                    SubObj.Chip = chip
+                    chip.MouseButton1Click:Connect(function()
+                        CloseAllPopups()
+                        PCSelect(SubObj)
+                    end)
+                    -- ist gerade ein einzelner Sub-Tab offen, bleibt die neue Karte erst versteckt
+                    if PCSingle then CardFrame.Visible = false end
+                end
             else
                 local textW = TextService:GetTextSize(subTabName, 12, Library.FontBold, Vector2.new(1000, 30)).X
                 SubButton = Create("TextButton", {
@@ -2629,6 +2754,10 @@ function Library.New(titleText, customThemeColor)
             SubObj.Button = SubButton
             SubObj.Container = IsPC and CardFrame or ElementScroll
             table.insert(TabObj.SubTabs, SubObj)
+            if IsPC then
+                if #TabObj.SubTabs == 1 then PCSelect(SubObj) end
+                PCRelayout()
+            end
 
             if not t_first_sub then
                 t_first_sub = SubObj
